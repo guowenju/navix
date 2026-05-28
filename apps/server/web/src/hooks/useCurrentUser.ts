@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { apiFetch, isAuthError } from "../api";
 import { clearUserAccessToken, getUserAccessToken } from "../auth/tokenStore";
+import { log } from "../utils/logger";
 import type { Claims } from "@navix/shared-ts";
 
 export type CurrentUser = Claims;
@@ -41,7 +42,7 @@ export const useCurrentUser = ({ redirectTo }: UseCurrentUserOptions = {}) => {
           }
           return;
         }
-        console.error(err);
+        log.error("运行期错误", err);
         setError("无法获取用户信息");
       } finally {
         setLoading(false);

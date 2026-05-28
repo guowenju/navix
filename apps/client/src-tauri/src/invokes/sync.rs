@@ -53,7 +53,7 @@ pub async fn check_server_compatibility(
 ) -> Result<ApiResponse<CompatibilityInfo>, String> {
     let trace_id = telemetry::ensure_trace_id();
     emit_client_event(
-        "sync.compat_check.started",
+        "sync.compat.check.started",
         LogLevel::Info,
         &trace_id,
         "check_server_compatibility",
@@ -85,7 +85,7 @@ pub async fn check_server_compatibility(
                 .map_err(|e| format!("解析兼容性响应失败: {e}"))?;
             if parsed.success {
                 emit_client_event(
-                    "sync.compat_check.passed",
+                    "sync.compat.check.passed",
                     LogLevel::Info,
                     &trace_id,
                     "check_server_compatibility",
@@ -100,7 +100,7 @@ pub async fn check_server_compatibility(
                 );
             } else {
                 emit_client_event(
-                    "sync.compat_check.blocked",
+                    "sync.compat.check.blocked",
                     LogLevel::Warn,
                     &trace_id,
                     "check_server_compatibility",
@@ -116,7 +116,7 @@ pub async fn check_server_compatibility(
         }
         Err(e) => {
             emit_client_event(
-                "sync.compat_check.blocked",
+                "sync.compat.check.blocked",
                 LogLevel::Error,
                 &trace_id,
                 "check_server_compatibility",
@@ -135,7 +135,7 @@ pub async fn check_token_and_user(
 ) -> Result<String, String> {
     let trace_id = telemetry::ensure_trace_id();
     emit_client_event(
-        "auth.token_verify.started",
+        "auth.token.verify.started",
         LogLevel::Info,
         &trace_id,
         "check_token_and_user",
@@ -157,7 +157,7 @@ pub async fn check_token_and_user(
                 let error_text = res.text().await.unwrap_or_else(|_| "无法读取响应体".into());
 
                 emit_client_event(
-                    "auth.token_verify.failed",
+                    "auth.token.verify.failed",
                     LogLevel::Warn,
                     &trace_id,
                     "check_token_and_user",
@@ -189,7 +189,7 @@ pub async fn check_token_and_user(
                             telemetry::set_trace_id(trace);
                         }
                         emit_client_event(
-                            "auth.token_verify.succeeded",
+                            "auth.token.verify.succeeded",
                             LogLevel::Info,
                             &trace_id,
                             "check_token_and_user",
@@ -201,7 +201,7 @@ pub async fn check_token_and_user(
                         Ok(resp.message)
                     } else {
                         emit_client_event(
-                            "auth.token_verify.failed",
+                            "auth.token.verify.failed",
                             LogLevel::Warn,
                             &trace_id,
                             "check_token_and_user",
@@ -215,7 +215,7 @@ pub async fn check_token_and_user(
                 }
                 Err(e) => {
                     emit_client_event(
-                        "auth.token_verify.failed",
+                        "auth.token.verify.failed",
                         LogLevel::Error,
                         &trace_id,
                         "check_token_and_user",
@@ -227,7 +227,7 @@ pub async fn check_token_and_user(
         }
         Err(e) => {
             emit_client_event(
-                "auth.token_verify.failed",
+                "auth.token.verify.failed",
                 LogLevel::Error,
                 &trace_id,
                 "check_token_and_user",

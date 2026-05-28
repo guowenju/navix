@@ -4,6 +4,7 @@ import { apiFetch, isAuthError } from "../api";
 import { clearUserAccessToken, getUserAccessToken } from "../auth/tokenStore";
 import { useCurrentUser } from "../hooks/useCurrentUser";
 import { useI18n } from "../i18n/useI18n";
+import { log } from "../utils/logger";
 import styles from "./Admin.module.css";
 
 interface AdminUser {
@@ -64,7 +65,7 @@ const AdminPage = () => {
         void navigate("/login");
         return;
       }
-      console.error(err);
+      log.error("运行期错误", err);
       setError(t("admin.fetchUsersFailed"));
     } finally {
       setLoading(false);
@@ -120,7 +121,7 @@ const AdminPage = () => {
         void navigate("/login");
         return;
       }
-      console.error(err);
+      log.error("运行期错误", err);
       setError((err as Error).message || t("admin.actionFailed"));
     }
   };

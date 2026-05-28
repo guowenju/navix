@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { apiFetch, isAuthError } from "../api";
 import { clearUserAccessToken, getUserAccessToken } from "../auth/tokenStore";
 import { useI18n } from "../i18n/useI18n";
+import { log } from "../utils/logger";
 import styles from "./UserSettings.module.css";
 import type { Claims } from "@navix/shared-ts";
 
@@ -46,7 +47,7 @@ const UserSettingsPage = () => {
       } catch (err) {
         clearUserAccessToken();
         void navigate("/login");
-        console.error(err);
+        log.error("运行期错误", err);
       }
     };
 
@@ -93,7 +94,7 @@ const UserSettingsPage = () => {
         return;
       }
       setUsernameMessage({ text: t("settings.requestFailed"), type: "error" });
-      console.error(err);
+      log.error("运行期错误", err);
     }
   };
 
@@ -149,7 +150,7 @@ const UserSettingsPage = () => {
         return;
       }
       setPasswordMessage({ text: t("settings.requestFailed"), type: "error" });
-      console.error(err);
+      log.error("运行期错误", err);
     }
   };
 

@@ -45,6 +45,8 @@ export interface TrackEventOptions {
   error_message?: string;
 }
 
+export type TelemetryLevel = "debug" | "info" | "warn" | "error";
+
 const defaultSink = (record: TelemetryRecord) => {
   const line = JSON.stringify(record);
   if (record.level === LogLevel.Error || record.level === LogLevel.Warn) {
@@ -52,6 +54,24 @@ const defaultSink = (record: TelemetryRecord) => {
   } else {
     console.info(line);
   }
+};
+
+export const createTraceId = () => {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return globalThis.crypto.randomUUID().replace(/-/g, "");
+  }
+  return `${Date.now().toString(16)}${Math.random().toString(16).slice(2, 10)}`;
+};
+
+export const normalizeEventName = (value: string): string => {
+  const withDots = value
+    .trim()
+    .replace(/[:_-]/g, ".")
+    .replace(/([a-z0-9])([A-Z])/g, "$1.$2")
+    .replace(/\.+/g, ".")
+    .replace(/^\./, "")
+    .replace(/\.$/, "");
+  return withDots.toLowerCase() || "frontend.log.update";
 };
 
 const toSerializable = (value: unknown): unknown => {
@@ -91,21 +111,14 @@ export const createFrontendTelemetryLogger = (
     platform: options.app,
   };
 
-  const createId = () => {
-    if (typeof globalThis.crypto?.randomUUID === "function") {
-      return globalThis.crypto.randomUUID().replace(/-/g, "");
-    }
-    return `${Date.now().toString(16)}${Math.random().toString(16).slice(2, 10)}`;
-  };
-
   const resolveContext = (overrides: TelemetryBaseContext = {}) => {
     const base = options.getBaseContext?.() ?? {};
     const merged = { ...base, ...localContext, ...overrides };
     if (!merged.trace_id) {
-      merged.trace_id = createId();
+      merged.trace_id = createTraceId();
     }
     if (!merged.session_id) {
-      merged.session_id = createId();
+      merged.session_id = createTraceId();
     }
     return merged;
   };
@@ -120,7 +133,7 @@ export const createFrontendTelemetryLogger = (
   ): Headers => {
     const resolved = resolveContext(overrides);
     const nextHeaders = new Headers(headers);
-    const requestId = createId();
+    const requestId = createTraceId();
     if (!nextHeaders.has("x-trace-id") && resolved.trace_id) {
       nextHeaders.set("x-trace-id", resolved.trace_id);
     }
@@ -165,8 +178,8 @@ export const createFrontendTelemetryLogger = (
       !!opts.error_message;
     const record: TelemetryRecord = {
       schema_version: "1.0.0",
-      event_name: event,
-      event_id: createId(),
+      event_name: normalizeEventName(event),
+      event_id: createTraceId(),
       timestamp: new Date().toISOString(),
       level,
       source: {
@@ -181,7 +194,7 @@ export const createFrontendTelemetryLogger = (
         role: resolved.role ?? null,
       },
       context: {
-        session_id: resolved.session_id ?? createId(),
+        session_id: resolved.session_id ?? createTraceId(),
         trace_id: resolved.trace_id ?? "",
         request_id: resolved.request_id ?? null,
         route: resolved.route ?? null,
@@ -221,3 +234,72 @@ export const createFrontendTelemetryLogger = (
     captureResponseContext,
   };
 };
+
+const defaultBrowserTelemetry = createFrontendTelemetryLogger({
+  app: "web",
+  appVersion: "unknown",
+});
+
+const levelToContractLevel = (level: TelemetryLevel): LogLevel => {
+  if (level === "debug") return LogLevel.Debug;
+  if (level === "warn") return LogLevel.Warn;
+  if (level === "error") return LogLevel.Error;
+  return LogLevel.Info;
+};
+
+const parseTelemetryLikeMessage = (
+  input: string,
+): {
+  event: string;
+  fields?: Record<string, unknown>;
+} => {
+  const trimmed = input.trim();
+  if (!trimmed) {
+    return {
+      event: "frontend.log.update",
+      fields: { message: "" },
+    };
+  }
+  try {
+    const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+    if (parsed && typeof parsed === "object") {
+      const event =
+        typeof parsed.event === "string" && parsed.event.trim()
+          ? parsed.event
+          : typeof parsed.event_name === "string" && parsed.event_name.trim()
+            ? parsed.event_name
+            : "frontend.log.update";
+      const { event: _event, event_name: _eventName, ...rest } = parsed;
+      return {
+        event,
+        fields: rest,
+      };
+    }
+  } catch {
+    // 非 JSON 字符串按 message 输出。
+  }
+  return {
+    event: "frontend.log.update",
+    fields: { message: input },
+  };
+};
+
+export const logTelemetry = (
+  level: TelemetryLevel,
+  event: string,
+  fields: Record<string, unknown> = {},
+) =>
+  defaultBrowserTelemetry.track(normalizeEventName(event), {
+    level: levelToContractLevel(level),
+    payload: fields,
+  });
+
+const logRaw = (level: TelemetryLevel, message: string) => {
+  const { event, fields } = parseTelemetryLikeMessage(message);
+  return logTelemetry(level, event, fields);
+};
+
+export const debug = (message: string) => logRaw("debug", message);
+export const info = (message: string) => logRaw("info", message);
+export const warn = (message: string) => logRaw("warn", message);
+export const error = (message: string) => logRaw("error", message);

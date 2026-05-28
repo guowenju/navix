@@ -1,4 +1,5 @@
-﻿import { useState, useEffect, Dispatch, SetStateAction } from "react";
+import { useState, useEffect, Dispatch, SetStateAction } from "react";
+import { log } from "@/utils/logger";
 
 /**
  * @function useLocalStorage
@@ -26,7 +27,7 @@ function useLocalStorage<T>(
       }
       return initialValue;
     } catch (error) {
-      console.error("Failed to read from localStorage", error);
+      log.error(`Failed to read from localStorage: ${String(error)}`);
       return initialValue;
     }
   });
@@ -36,7 +37,7 @@ function useLocalStorage<T>(
     try {
       window.localStorage.setItem(key, JSON.stringify(storedValue));
     } catch (error) {
-      console.error("Failed to write to localStorage", error);
+      log.error(`Failed to write to localStorage: ${String(error)}`);
     }
   }, [key, storedValue]);
 

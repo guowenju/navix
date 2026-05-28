@@ -15,6 +15,7 @@ import { useAuth } from "@/contexts/Auth.context";
 import { useAppTheme } from "@/contexts";
 import SettingsModal from "@/features/Settings/SettingsModal";
 import UserProfileModal from "@/features/Auth/UserProfileModal";
+import { log } from "@/utils/logger";
 
 const isMacOS = () => {
   if (typeof navigator === "undefined") {
@@ -272,7 +273,7 @@ export const useMacAppMenu = () => {
           await previousMenu.close();
         }
       } catch (error) {
-        console.error("Failed to apply macOS app menu", error);
+        log.error(`Failed to apply macOS app menu: ${String(error)}`);
       }
     };
 

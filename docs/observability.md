@@ -2,7 +2,7 @@
 
 ## 概述
 
-本文档定义 Navix 项目的统一可观测性约定，适用于 `apps/server`、`apps/client`、`apps/server/web` 以及相关共享模块。
+本文档定义 Navix 项目的统一可观测性约定，适用于 `apps/server`、`apps/client`、`apps/server/web` 以及相关共享模块。运行期 telemetry 的接入细则见 [Telemetry / 日志规范](./telemetry-logging-spec.md)。
 
 目标是让日志、埋点与链路上下文保持一致，便于排障、质量分析与运行状态观察。
 
@@ -15,7 +15,7 @@
 
 ## 事件命名
 
-事件名称统一使用 `domain.object.action` 格式。
+事件名称统一使用小写点分段格式，推荐 `domain.object.action` 或 `domain.action.result`。
 
 示例：
 

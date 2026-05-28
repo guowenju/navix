@@ -8,7 +8,7 @@ import {
   DownloadOptions,
 } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
-import { info, error as logError } from "@tauri-apps/plugin-log";
+import { log } from "@/utils/logger";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { IoCloudDownloadOutline } from "react-icons/io5";
 import { useModal } from "@/contexts";
@@ -104,11 +104,11 @@ export default function CheckUpdatePage() {
     async (updateToInstall: Update) => {
       closeModal();
       try {
-        void info(t("help.checkUpdatePage.installingLog"));
+        log.info(t("help.checkUpdatePage.installingLog"));
         await updateToInstall.install();
         await relaunch();
       } catch (error) {
-        void logError(`Installation failed: ${String(error)}`);
+        log.error(`Installation failed: ${String(error)}`);
         openAlert({
           title: t("help.checkUpdatePage.installFailed"),
           message: `${String(error)}`,
@@ -148,7 +148,7 @@ export default function CheckUpdatePage() {
             switch (event.event) {
               case "Started":
                 totalLength = event.data.contentLength ?? 0;
-                void info(
+                log.info(
                   t("help.checkUpdatePage.downloadStartLog", {
                     size: (totalLength / 1024 / 1024).toFixed(2),
                   }),
@@ -171,7 +171,7 @@ export default function CheckUpdatePage() {
                 }
                 break;
               case "Finished":
-                void info("Download finished");
+                log.info("Download finished");
                 cleanupDownload();
                 openConfirm({
                   title: t("help.checkUpdatePage.downloadFinishedTitle"),
@@ -188,7 +188,7 @@ export default function CheckUpdatePage() {
         );
         setUnlisten(() => unlistenFn);
       } catch (error) {
-        void logError(`Download failed: ${String(error)}`);
+        log.error(`Download failed: ${String(error)}`);
         cleanupDownload();
         openAlert({
           title: t("help.checkUpdatePage.downloadFailed"),
@@ -253,10 +253,10 @@ export default function CheckUpdatePage() {
           message: t("help.checkUpdatePage.latestVersion"),
           confirmText: t("button.confirm"),
         });
-        void info("no update found");
+        log.info("no update found");
       }
     } catch (error) {
-      void logError(`Update check failed: ${String(error)}`);
+      log.error(`Update check failed: ${String(error)}`);
       closeModal();
       openAlert({
         title: t("help.checkUpdatePage.checkFailed"),

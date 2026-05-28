@@ -5,6 +5,7 @@ import { apiFetch } from "../api";
 import { setCurrentUserSession } from "../auth/tokenStore";
 import AuthLayout from "../components/AuthLayout";
 import { useI18n } from "../i18n/useI18n";
+import { log } from "../utils/logger";
 
 type AuthTokenResponse = {
   access_token: string;
@@ -51,7 +52,7 @@ const LoginPage = () => {
         }
         setInitialized(resp.data?.initialized ?? true);
       } catch (err) {
-        console.error(err);
+        log.error("运行期错误", err);
         if (!active) {
           return;
         }
@@ -118,7 +119,7 @@ const LoginPage = () => {
       } else {
         setError(t("auth.requestFailed"));
       }
-      console.error(err);
+      log.error("运行期错误", err);
     }
   };
 

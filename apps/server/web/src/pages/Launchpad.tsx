@@ -6,6 +6,7 @@ import { clearUserAccessToken, getUserAccessToken } from "../auth/tokenStore";
 import DynamicIcon from "../components/DynamicIcon";
 import { useI18n } from "../i18n/useI18n";
 import type { AppShellOutletContext } from "../layouts/AppShell";
+import { log } from "../utils/logger";
 import iconStyles from "../components/DynamicIcon.module.css";
 import styles from "./Launchpad.module.css";
 import type { Claims } from "@navix/shared-ts";
@@ -224,7 +225,7 @@ const LaunchpadPage = () => {
         void navigate("/login");
         return;
       }
-      console.error(err);
+      log.error("运行期错误", err);
       setError(t("launchpad.fetchFailed"));
     } finally {
       setLoading(false);
@@ -352,7 +353,7 @@ const LaunchpadPage = () => {
             if (controller.signal.aborted) {
               return;
             }
-            console.error("拉取站点图标失败", err);
+            log.error("拉取站点图标失败", err);
             setIconErrors((prev) => ({ ...prev, [site.uuid]: true }));
           }
         }),
@@ -536,7 +537,7 @@ const LaunchpadPage = () => {
         void navigate("/login");
         return;
       }
-      console.error(err);
+      log.error("运行期错误", err);
       window.alert(t("launchpad.deleteFailed"));
     } finally {
       setDeletingSiteUuid(null);
@@ -607,7 +608,7 @@ const LaunchpadPage = () => {
         void navigate("/login");
         return;
       }
-      console.error(err);
+      log.error("运行期错误", err);
       window.alert(t("launchpad.saveFailed"));
     } finally {
       setSavingSite(false);

@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { apiFetch } from "../api";
 import { useI18n } from "../i18n/useI18n";
+import { log } from "../utils/logger";
 import styles from "./Footer.module.css";
 import type { VersionInfo } from "@navix/shared-ts";
 
@@ -17,7 +18,7 @@ const Footer = () => {
         const response = await apiFetch<VersionInfo>("/api/version");
         setVersionInfo(response.data ?? null);
       } catch (error) {
-        console.error("无法获取后端版本信息:", error);
+        log.error("无法获取后端版本信息", error);
       }
     };
 

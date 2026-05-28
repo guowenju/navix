@@ -16,6 +16,7 @@ import {
 } from "../auth/tokenStore";
 import type { CurrentUser } from "../hooks/useCurrentUser";
 import { useI18n } from "../i18n/useI18n";
+import { log } from "../utils/logger";
 import styles from "./ControlCenter.module.css";
 
 export type ControlCenterSection = "account" | "preferences" | "admin";
@@ -201,7 +202,7 @@ const ControlCenter = ({
           onLogout();
           return;
         }
-        console.error(error);
+        log.error("运行期错误", error);
         setAdminError(t("admin.fetchUsersFailed"));
       } finally {
         if (mode === "refresh") {
@@ -387,7 +388,7 @@ const ControlCenter = ({
         onLogout();
         return;
       }
-      console.error(error);
+      log.error("运行期错误", error);
       setUsernameMessage({ text: t("settings.requestFailed"), type: "error" });
     }
   };
@@ -436,7 +437,7 @@ const ControlCenter = ({
         onLogout();
         return;
       }
-      console.error(error);
+      log.error("运行期错误", error);
       setPasswordMessage({ text: t("settings.requestFailed"), type: "error" });
     }
   };
@@ -473,7 +474,7 @@ const ControlCenter = ({
         onLogout();
         return;
       }
-      console.error(error);
+      log.error("运行期错误", error);
       setAdminError((error as Error).message || t("admin.actionFailed"));
     }
   };
@@ -506,7 +507,7 @@ const ControlCenter = ({
         onLogout();
         return;
       }
-      console.error(error);
+      log.error("运行期错误", error);
       setAdminError((error as Error).message || t("admin.createUserFailed"));
     }
   };
@@ -553,7 +554,7 @@ const ControlCenter = ({
       }, 400);
     } catch (error) {
       removeStoredAccountSession(session.userUuid);
-      console.error(error);
+      log.error("运行期错误", error);
       setAccountSwitchMessage({
         text: t("auth.accountSwitchFailed"),
         type: "error",

@@ -19,17 +19,17 @@ pub enum ObservabilityEvent {
     AuthRefreshSucceeded,
     #[serde(rename = "auth.refresh.failed")]
     AuthRefreshFailed,
-    #[serde(rename = "auth.token_verify.started")]
+    #[serde(rename = "auth.token.verify.started")]
     AuthTokenVerifyStarted,
-    #[serde(rename = "auth.token_verify.succeeded")]
+    #[serde(rename = "auth.token.verify.succeeded")]
     AuthTokenVerifySucceeded,
-    #[serde(rename = "auth.token_verify.failed")]
+    #[serde(rename = "auth.token.verify.failed")]
     AuthTokenVerifyFailed,
-    #[serde(rename = "sync.compat_check.started")]
+    #[serde(rename = "sync.compat.check.started")]
     SyncCompatCheckStarted,
-    #[serde(rename = "sync.compat_check.passed")]
+    #[serde(rename = "sync.compat.check.passed")]
     SyncCompatCheckPassed,
-    #[serde(rename = "sync.compat_check.blocked")]
+    #[serde(rename = "sync.compat.check.blocked")]
     SyncCompatCheckBlocked,
     #[serde(rename = "sync.session.started")]
     SyncSessionStarted,
@@ -55,12 +55,12 @@ impl ObservabilityEvent {
             Self::AuthRefreshStarted => "auth.refresh.started",
             Self::AuthRefreshSucceeded => "auth.refresh.succeeded",
             Self::AuthRefreshFailed => "auth.refresh.failed",
-            Self::AuthTokenVerifyStarted => "auth.token_verify.started",
-            Self::AuthTokenVerifySucceeded => "auth.token_verify.succeeded",
-            Self::AuthTokenVerifyFailed => "auth.token_verify.failed",
-            Self::SyncCompatCheckStarted => "sync.compat_check.started",
-            Self::SyncCompatCheckPassed => "sync.compat_check.passed",
-            Self::SyncCompatCheckBlocked => "sync.compat_check.blocked",
+            Self::AuthTokenVerifyStarted => "auth.token.verify.started",
+            Self::AuthTokenVerifySucceeded => "auth.token.verify.succeeded",
+            Self::AuthTokenVerifyFailed => "auth.token.verify.failed",
+            Self::SyncCompatCheckStarted => "sync.compat.check.started",
+            Self::SyncCompatCheckPassed => "sync.compat.check.passed",
+            Self::SyncCompatCheckBlocked => "sync.compat.check.blocked",
             Self::SyncSessionStarted => "sync.session.started",
             Self::SyncSessionAcknowledged => "sync.session.acknowledged",
             Self::SyncSessionCompleted => "sync.session.completed",

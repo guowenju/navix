@@ -42,6 +42,11 @@ Navix 是一个以桌面端为核心的 monorepo 项目，当前包含：
 - 数据库：SQLite
 - 共享层：`packages/shared-ts`、`packages/shared-ui`、`packages/shared-rs`
 
+## 文档
+
+- [可观测性规范](docs/observability.md)
+- [Telemetry / 日志规范](docs/telemetry-logging-spec.md)
+
 ## 目录结构
 
 ```text
