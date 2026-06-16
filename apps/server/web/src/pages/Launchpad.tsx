@@ -164,6 +164,8 @@ const LaunchpadPage = () => {
   const iconUrlsRef = useRef<Record<string, string>>({});
   const groupRefs = useRef<Record<string, HTMLElement | null>>({});
   const searchEngineMenuRef = useRef<HTMLDivElement | null>(null);
+  const sidebarTriggerRef = useRef<HTMLDivElement | null>(null);
+  const sidebarRef = useRef<HTMLElement | null>(null);
   const navigate = useNavigate();
   const { launchpadMode: mode } = useOutletContext<AppShellOutletContext>();
 
@@ -302,6 +304,58 @@ const LaunchpadPage = () => {
   useEffect(() => {
     iconUrlsRef.current = iconUrls;
   }, [iconUrls]);
+
+  const closeSidebar = useCallback(() => {
+    setSidebarHovered(false);
+  }, []);
+
+  useEffect(() => {
+    if (
+      !sidebarHovered ||
+      !launchpadSidebarEnabled ||
+      filteredLaunchpad.length === 0
+    ) {
+      return;
+    }
+
+    const isInsideSidebarZone = (target: EventTarget | null) =>
+      target instanceof Node &&
+      (sidebarTriggerRef.current?.contains(target) ||
+        sidebarRef.current?.contains(target));
+
+    const handlePointerMove = (event: PointerEvent) => {
+      if (!isInsideSidebarZone(event.target)) {
+        closeSidebar();
+      }
+    };
+    const handlePointerOut = (event: PointerEvent) => {
+      if (event.relatedTarget === null) {
+        closeSidebar();
+      }
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        closeSidebar();
+      }
+    };
+
+    document.addEventListener("pointermove", handlePointerMove);
+    document.addEventListener("pointerout", handlePointerOut);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("blur", closeSidebar);
+
+    return () => {
+      document.removeEventListener("pointermove", handlePointerMove);
+      document.removeEventListener("pointerout", handlePointerOut);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("blur", closeSidebar);
+    };
+  }, [
+    closeSidebar,
+    filteredLaunchpad.length,
+    launchpadSidebarEnabled,
+    sidebarHovered,
+  ]);
 
   useEffect(() => {
     window.localStorage.setItem(
@@ -787,6 +841,7 @@ const LaunchpadPage = () => {
             {filteredLaunchpad.length > 0 && launchpadSidebarEnabled ? (
               <>
                 <div
+                  ref={sidebarTriggerRef}
                   className={styles.groupSidebarTrigger}
                   data-ui="launchpad-sidebar-trigger"
                   onMouseEnter={() => setSidebarHovered(true)}
@@ -807,12 +862,13 @@ const LaunchpadPage = () => {
                   </span>
                 </div>
                 <aside
+                  ref={sidebarRef}
                   className={`launchpad-group-sidebar ${styles.groupSidebar}`}
                   data-ui="launchpad-sidebar"
                   data-visible={sidebarHovered}
                   aria-label={t("launchpad.groupSidebar")}
                   onMouseEnter={() => setSidebarHovered(true)}
-                  onMouseLeave={() => setSidebarHovered(false)}
+                  onMouseLeave={closeSidebar}
                 >
                   <div className={styles.groupSidebarRail}>
                     {filteredLaunchpad.map((group) => (
@@ -833,7 +889,7 @@ const LaunchpadPage = () => {
                             });
                             setActiveGroupUuid(group.uuid);
                           }
-                          setSidebarHovered(false);
+                          closeSidebar();
                         }}
                       >
                         {group.name}
