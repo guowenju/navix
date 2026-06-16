@@ -77,7 +77,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build web assets
-        run: pnpm --dir apps/web web:build
+        run: pnpm --dir apps/server/web web:build
 
       - name: Build server binary
         run: cargo build --locked --release -p navix-server
