@@ -1,110 +1,45 @@
 # Navix
 
-Navix 是一个以桌面端为核心的 monorepo 项目，当前包含：
+Navix 是一个面向个人、团队和自托管场景的导航主页。它可以把常用网站、内网服务、管理后台和搜索入口整理到一个干净的启动台里，并通过服务端在多台设备之间同步。
 
-- 桌面客户端：基于 Tauri v2、React 19、TypeScript 与本地 SQLite
-- 服务端：基于 Rust、Axum、SQLx 与 SQLite
-- 网页端：由服务端内嵌分发的静态前端
-- 共享模块：前后端共用的类型、契约、工具和 UI 组件
+你可以把 Navix 当作：
 
-项目目标是围绕“导航入口 + 管理员控制的账号体系 + 多端同步”构建一套聚焦导航功能的完整应用。
+- 桌面上的个人导航面板
+- 家庭服务器、NAS、Homelab 的入口页
+- 团队内部系统的统一入口
+- 同时支持公网地址和局域网地址的书签管理工具
 
-## 核心能力
+## 主要特点
 
-### 桌面端
+### 一处管理常用入口
 
-桌面端位于 `apps/client`，当前主要能力包括：
+- 按分组整理网站和服务。
+- 支持拖拽排序，让常用入口保持顺手的位置。
+- 支持站点图标、标题、描述和地址管理。
+- 支持浏览器书签导入，减少迁移成本。
 
-- 导航面板：网站分组、网站项管理、拖拽排序、WAN/LAN 地址切换、元数据抓取、书签导入、自定义搜索引擎
-- 账户体系：匿名用户、多账户切换、登录状态管理、删除账户本地数据
-- 数据同步：兼容性校验、分块同步、图标上传下载、同步日志记录
-- 应用设置：多语言、主题、开机自启、启动最小化、关闭最小化到托盘、自动更新
+### 同时照顾公网和内网
 
-桌面端本地数据以用户主目录下的 `~/.vust/navix` 为中心组织，数据库、配置和图标缓存都围绕该目录管理。
+很多服务在外网和内网访问地址不同。Navix 支持为同一个站点配置公网地址和局域网地址，并在使用时切换访问模式。
 
-### 服务端
+### 桌面端和 Web 端都能用
 
-服务端位于 `apps/server`，当前主要能力包括：
+- 桌面端适合日常使用，支持本地数据、托盘、主题、多语言和自动更新。
+- Web 端由服务端内嵌分发，适合在浏览器中访问或作为团队入口页。
 
-- 认证与账号：管理员初始化、管理员创建用户、登录、刷新令牌、登录态校验、修改用户名、修改密码
-- 同步与兼容性：`/api/compat`、同步会话 `start -> chunk -> complete`、图标上传下载、服务端实例 UUID 校验
-- 管理接口：用户列表、启用、禁用、清理、删除
-- 观测能力：结构化日志、`trace_id` / `request_id`
-- 静态资源分发：将 `apps/server/web/dist` 嵌入服务端二进制并作为前端 fallback 返回
+### 多账户和多设备同步
 
-服务端是桌面客户端同步链路中的核心服务，负责账号、导航同步与运行时管理。
+Navix 服务端负责账号管理和数据同步。管理员创建账号后，用户可以在桌面端登录并同步导航数据、分组、搜索引擎和图标。
 
-## 技术栈
+### 自托管友好
 
-- 桌面宿主：Tauri v2
-- 前端：React 19、TypeScript、Vite、Styled Components、Framer Motion
-- 服务端：Rust、Axum、SQLx、Tokio
-- 数据库：SQLite
-- 共享层：`packages/shared-ts`、`packages/shared-ui`、`packages/shared-rs`
-
-## 文档
-
-- [可观测性规范](docs/observability.md)
-- [Telemetry / 日志规范](docs/telemetry-logging-spec.md)
-
-## 目录结构
-
-```text
-navix/
-├── apps/
-│   ├── client/             # Tauri 桌面客户端
-│   │   ├── src/             # React 界面层
-│   │   └── src-tauri/       # Rust 宿主、数据库、invoke、托盘等
-│   └── server/              # Rust/Axum 服务端
-│       └── web/             # 网页端静态前端
-├── packages/
-│   ├── shared-rs/           # Rust 共享类型与能力
-│   ├── shared-ts/           # TypeScript 共享类型与工具
-│   └── shared-ui/           # 共享 UI 组件与主题
-├── docs/                    # 项目文档
-├── Cargo.toml               # Rust workspace 根配置
-├── pnpm-workspace.yaml      # pnpm workspace 根配置
-├── package.json             # 根脚本与前端校验命令
-├── CHANGELOG.md             # 全项目统一更新日志
-└── README.md                # 项目总入口说明
-```
+服务端可以用 Docker 快速部署，数据保存在挂载目录中，便于备份和迁移。
 
 ## 快速开始
 
-在仓库根目录执行：
+### 1. 启动服务端
 
-```bash
-pnpm install
-```
-
-### 启动桌面端开发环境
-
-```bash
-pnpm tauri dev
-```
-
-### 启动网页端开发环境
-
-```bash
-pnpm --dir apps/server/web dev
-```
-
-### 启动服务端
-
-```bash
-pnpm server:dev
-```
-
-如果只想直接运行服务端，也可以：
-
-```bash
-pnpm --dir apps/server/web web:build
-cargo run -p navix-server
-```
-
-## Docker 使用
-
-### 直接运行镜像
+使用 Docker 运行：
 
 ```bash
 docker run -d \
@@ -115,13 +50,57 @@ docker run -d \
   sfwwslm/navix-server:latest
 ```
 
-说明：
+启动后访问：
 
-- 数据库位于 `/data/database/navix-server.db`
-- 服务端实例标识文件位于 `/data/server_instance.uuid`
-- 图标文件位于 `/data/storage/user_icons`
+```text
+http://服务器地址:9990
+```
 
-如需启用 HTTPS，请同时暴露 `9991` 端口，并挂载证书目录：
+第一次打开时，页面会引导你初始化管理员账号。普通用户账号由管理员在 Web 管理界面创建。
+
+### 2. 使用桌面端
+
+从 GitHub Release 下载适合你系统的 Navix 桌面端安装包：
+
+- [Navix Releases](https://github.com/sfwwslm/navix/releases)
+
+安装后可以先匿名使用本地导航，也可以在设置中填写服务端地址并登录账号，开启跨设备同步。
+
+### 3. 添加导航入口
+
+登录后可以：
+
+- 创建网站分组。
+- 添加常用网站或内网服务。
+- 为站点配置公网地址和局域网地址。
+- 导入浏览器书签。
+- 在桌面端与服务端之间同步数据。
+
+## Docker Compose
+
+```yaml
+services:
+  navix-server:
+    image: sfwwslm/navix-server:latest
+    container_name: navix-server
+    restart: unless-stopped
+    ports:
+      - "9990:9990"
+    volumes:
+      - ./data:/data
+```
+
+数据会保存在 `./data`：
+
+- 数据库：`./data/database/navix-server.db`
+- 服务端实例标识：`./data/server_instance.uuid`
+- 图标文件：`./data/storage/user_icons`
+
+`server_instance.uuid` 会参与客户端账号绑定和同步校验，请和数据库一起备份。
+
+## 启用 HTTPS
+
+如果你希望服务端直接提供 HTTPS，可以挂载证书并启用 HTTPS 参数：
 
 ```bash
 docker run -d \
@@ -137,53 +116,53 @@ docker run -d \
   --key-path /certs/privkey.pem
 ```
 
-### Docker Compose 示例
+也可以把 Navix 放在反向代理后面，由 Nginx、Caddy、Traefik 等组件负责 HTTPS。
 
-```yaml
-services:
-  navix-server:
-    image: sfwwslm/navix-server:latest
-    container_name: navix-server
-    restart: unless-stopped
-    ports:
-      - "9990:9990"
-      # - "9991:9991"
-    volumes:
-      - ./data:/data
-      # - /path/to/certs:/certs:ro
-    # command: >
-    #   --enable-https
-    #   --cert-path /certs/fullchain.pem
-    #   --key-path /certs/privkey.pem
+## 本地数据
+
+桌面端默认把数据保存在用户目录下：
+
+```text
+~/.vust/navix
 ```
 
-## 常用命令
+其中包括本地数据库、配置文件和图标缓存。删除账号本地数据时，Navix 会清理该账号关联的数据。
 
-### 前端相关
+## 开发者信息
+
+Navix 是一个 monorepo：
+
+```text
+apps/client        桌面端
+apps/server        服务端
+apps/server/web    服务端内嵌 Web 端
+packages/shared-*  共享类型、工具和 UI
+```
+
+常用开发命令：
 
 ```bash
-pnpm format
-pnpm check
+pnpm install
+pnpm tauri dev
+pnpm server:dev
 ```
 
-### 全仓校验
+校验命令：
 
 ```bash
 pnpm format:all
 pnpm check:all
-```
-
-### Rust 相关
-
-```bash
-cargo fmt
-cargo clippy
 cargo test --workspace
 ```
 
-## 文档索引
+## 文档
 
-- [CHANGELOG.md](https://github.com/sfwwslm/navix/blob/main/CHANGELOG.md)
-- [客户端文档](https://github.com/sfwwslm/navix/blob/main/docs/client-app.md)
-- [服务端文档](https://github.com/sfwwslm/navix/blob/main/docs/server.md)
-- [可观测性文档](https://github.com/sfwwslm/navix/blob/main/docs/observability.md)
+- [更新日志](CHANGELOG.md)
+- [客户端文档](docs/client-app.md)
+- [服务端文档](docs/server.md)
+- [可观测性规范](docs/observability.md)
+- [Telemetry / 日志规范](docs/telemetry-logging-spec.md)
+
+## 许可证
+
+Navix 使用 MIT 许可证发布。
