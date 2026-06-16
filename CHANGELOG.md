@@ -2,6 +2,19 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，并遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## 0.2.2 - 2026-06-16
+
+### Changed
+
+- 调整 Web 应用在仓库中的组织位置，使服务端内嵌网页资源、构建脚本和部署结构更一致。
+- 收敛全栈 telemetry 日志体系，统一服务端、桌面端和网页端的结构化日志入口、事件命名、链路追踪和脱敏规则。
+- 新增 telemetry 自动检查并接入常规校验流程，降低后续新增日志时出现不规范事件名或敏感信息泄露的风险。
+- 补充中文 telemetry 日志规范文档，便于后续排障、审计和新增埋点时保持一致。
+
+### Fixed
+
+- 修复 Web 端 Launchpad 分组侧边栏在多屏场景下可能持续显示的问题；当鼠标移到左侧副屏、窗口失焦或页面隐藏时，侧边栏会自动收起。
+
 ## 0.2.1 - 2026-05-17
 
 ### Changed
