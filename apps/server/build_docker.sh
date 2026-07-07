@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-IMAGE_NAME="${1:-sfwwslm/navix-server}"
+IMAGE_NAME="${1:-guowenju/navix-server}"
 IMAGE_TAG="${2:-}"
 DOCKERFILE_PATH="${DOCKERFILE_PATH:-$SCRIPT_DIR/Dockerfile}"
 NPM_REGISTRY="${NPM_REGISTRY:-https://registry.npmmirror.com/}"

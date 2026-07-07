@@ -47,7 +47,7 @@ docker run -d \
   --restart unless-stopped \
   -p 9990:9990 \
   -v navix-data:/data \
-  sfwwslm/navix-server:latest
+  guowenju/navix-server:latest
 ```
 
 启动后访问：
@@ -62,7 +62,7 @@ http://服务器地址:9990
 
 从 GitHub Release 下载适合你系统的 Navix 桌面端安装包：
 
-- [Navix Releases](https://github.com/sfwwslm/navix/releases)
+- [Navix Releases](https://github.com/guowenju/navix/releases)
 
 安装后可以先匿名使用本地导航，也可以在设置中填写服务端地址并登录账号，开启跨设备同步。
 
@@ -81,7 +81,7 @@ http://服务器地址:9990
 ```yaml
 services:
   navix-server:
-    image: sfwwslm/navix-server:latest
+    image: guowenju/navix-server:latest
     container_name: navix-server
     restart: unless-stopped
     ports:
@@ -110,7 +110,7 @@ docker run -d \
   -p 9991:9991 \
   -v navix-data:/data \
   -v /path/to/certs:/certs:ro \
-  sfwwslm/navix-server:latest \
+  guowenju/navix-server:latest \
   --enable-https \
   --cert-path /certs/fullchain.pem \
   --key-path /certs/privkey.pem

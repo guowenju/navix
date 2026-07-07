@@ -5,5 +5,5 @@ Priority: optional
 Architecture: amd64
 Essential: no
 Installed-Size: 4096
-Maintainer: sfwwslm
+Maintainer: Wenju Guo <sfwwslm@gmail.com>
 Description: Navix server service
