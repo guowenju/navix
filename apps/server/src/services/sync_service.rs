@@ -536,8 +536,9 @@ async fn calculate_icon_diffs(
 
 #[cfg(test)]
 mod tests {
-    use super::process_website_groups;
-    use crate::models::website::WebsiteGroupDto;
+    use super::{fetch_records_after_client_rev, process_website_groups, process_websites};
+    use crate::models::website::{WebsiteGroupDto, WebsitesDto};
+    use crate::services::navigation_service::delete_website_for_user;
     use sqlx::sqlite::SqlitePoolOptions;
 
     async fn create_test_pool() -> sqlx::SqlitePool {
@@ -564,7 +565,104 @@ mod tests {
         .await
         .expect("create website_groups");
 
+        sqlx::query(
+            "CREATE TABLE websites (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                uuid TEXT NOT NULL UNIQUE,
+                user_uuid TEXT NOT NULL,
+                group_uuid TEXT NOT NULL,
+                title TEXT NOT NULL,
+                url TEXT NOT NULL,
+                url_lan TEXT,
+                default_icon TEXT,
+                local_icon_path TEXT,
+                background_color TEXT,
+                description TEXT,
+                sort_order INTEGER,
+                is_deleted INTEGER NOT NULL DEFAULT 0,
+                rev INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            )",
+        )
+        .execute(&pool)
+        .await
+        .expect("create websites");
+
+        sqlx::query(
+            "CREATE TRIGGER set_websites_updated_at
+            AFTER UPDATE ON websites FOR EACH ROW
+            BEGIN
+                UPDATE websites
+                SET updated_at = (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    rev = OLD.rev + 1
+                WHERE id = OLD.id;
+            END",
+        )
+        .execute(&pool)
+        .await
+        .expect("create websites update trigger");
+
+        sqlx::query(
+            "CREATE TABLE search_engines (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                uuid TEXT NOT NULL UNIQUE,
+                user_uuid TEXT NOT NULL,
+                name TEXT NOT NULL,
+                url_template TEXT NOT NULL,
+                default_icon TEXT,
+                local_icon_path TEXT,
+                is_default INTEGER NOT NULL DEFAULT 0,
+                sort_order INTEGER,
+                is_deleted INTEGER NOT NULL DEFAULT 0,
+                rev INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            )",
+        )
+        .execute(&pool)
+        .await
+        .expect("create search_engines");
+
         pool
+    }
+
+    async fn seed_website(pool: &sqlx::SqlitePool, user_uuid: &str, website_uuid: &str, rev: i64) {
+        sqlx::query(
+            "INSERT INTO website_groups (uuid, user_uuid, name, description, sort_order, is_deleted, rev, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        )
+        .bind("g-website")
+        .bind(user_uuid)
+        .bind("Websites")
+        .bind(None::<String>)
+        .bind(Some(1_i64))
+        .bind(0_i64)
+        .bind(100_i64)
+        .bind("2026-01-01T00:00:00.000Z")
+        .execute(pool)
+        .await
+        .expect("seed website group");
+
+        sqlx::query(
+            "INSERT INTO websites (uuid, user_uuid, group_uuid, title, url, url_lan, default_icon, local_icon_path, background_color, description, sort_order, is_deleted, rev, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+        )
+        .bind(website_uuid)
+        .bind(user_uuid)
+        .bind("g-website")
+        .bind("Server Site")
+        .bind("https://server.example")
+        .bind(None::<String>)
+        .bind(None::<String>)
+        .bind(None::<String>)
+        .bind(None::<String>)
+        .bind(None::<String>)
+        .bind(Some(1_i64))
+        .bind(0_i64)
+        .bind(rev)
+        .bind("2026-01-01T00:00:00.000Z")
+        .execute(pool)
+        .await
+        .expect("seed website");
     }
 
     #[tokio::test]
@@ -612,5 +710,98 @@ mod tests {
         .await
         .expect("fetch final name");
         assert_eq!(final_name, "server-name");
+    }
+
+    #[tokio::test]
+    async fn delete_website_for_user_keeps_tombstone_for_sync() {
+        let pool = create_test_pool().await;
+        seed_website(&pool, "u-1", "w-1", 200).await;
+
+        delete_website_for_user(&pool, "u-1", "w-1")
+            .await
+            .expect("delete website");
+
+        let (is_deleted, rev): (i64, i64) = sqlx::query_as(
+            "SELECT is_deleted, rev FROM websites WHERE uuid = ?1 AND user_uuid = ?2",
+        )
+        .bind("w-1")
+        .bind("u-1")
+        .fetch_one(&pool)
+        .await
+        .expect("fetch tombstone");
+
+        assert_eq!(is_deleted, 1);
+        assert!(rev > 200);
+    }
+
+    #[tokio::test]
+    async fn website_tombstone_blocks_stale_client_resurrection() {
+        let pool = create_test_pool().await;
+        seed_website(&pool, "u-1", "w-1", 200).await;
+        delete_website_for_user(&pool, "u-1", "w-1")
+            .await
+            .expect("delete website");
+
+        let client_websites = vec![WebsitesDto {
+            uuid: "w-1".to_string(),
+            group_uuid: "g-website".to_string(),
+            title: "Client Site".to_string(),
+            url: "https://client.example".to_string(),
+            url_lan: None,
+            default_icon: None,
+            local_icon_path: None,
+            background_color: None,
+            description: None,
+            sort_order: Some(9),
+            is_deleted: 0,
+            rev: 500,
+            updated_at: "2026-01-01T00:00:00.000Z".to_string(),
+        }];
+        let client_groups = vec![WebsiteGroupDto {
+            uuid: "g-website".to_string(),
+            name: "Websites".to_string(),
+            description: None,
+            sort_order: Some(1),
+            is_deleted: 0,
+            rev: 100,
+            updated_at: "2026-01-01T00:00:00.000Z".to_string(),
+        }];
+
+        let mut tx = pool.begin().await.expect("begin tx");
+        let affected = process_websites(&mut tx, "u-1", 200, &client_websites, &client_groups)
+            .await
+            .expect("process websites");
+        tx.commit().await.expect("commit");
+
+        assert_eq!(affected, 0);
+        let (title, is_deleted): (String, i64) = sqlx::query_as(
+            "SELECT title, is_deleted FROM websites WHERE uuid = ?1 AND user_uuid = ?2",
+        )
+        .bind("w-1")
+        .bind("u-1")
+        .fetch_one(&pool)
+        .await
+        .expect("fetch final website");
+        assert_eq!(title, "Server Site");
+        assert_eq!(is_deleted, 1);
+    }
+
+    #[tokio::test]
+    async fn website_tombstone_is_returned_by_incremental_sync() {
+        let pool = create_test_pool().await;
+        seed_website(&pool, "u-1", "w-1", 200).await;
+        delete_website_for_user(&pool, "u-1", "w-1")
+            .await
+            .expect("delete website");
+
+        let mut tx = pool.begin().await.expect("begin tx");
+        let sync_data = fetch_records_after_client_rev(&mut tx, "u-1", 200)
+            .await
+            .expect("fetch incremental data");
+        tx.commit().await.expect("commit");
+
+        assert_eq!(sync_data.websites.len(), 1);
+        assert_eq!(sync_data.websites[0].uuid, "w-1");
+        assert_eq!(sync_data.websites[0].is_deleted, 1);
     }
 }

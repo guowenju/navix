@@ -190,9 +190,11 @@ pub async fn delete_website_for_user(
     website_uuid: &str,
 ) -> ApiResult<()> {
     // 删除同样绑定当前用户，避免不同账号之间通过 uuid 互删数据。
+    // 同步协议依赖 is_deleted tombstone 向客户端传播删除状态，因此这里不能物理删除。
     let result = sqlx::query(
         r#"
-        DELETE FROM websites
+        UPDATE websites
+        SET is_deleted = 1
         WHERE uuid = ?1 AND user_uuid = ?2 AND is_deleted = 0
         "#,
     )
