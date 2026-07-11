@@ -2,6 +2,16 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，并遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## 0.2.3 - 2026-07-12
+
+### Changed
+
+- 完善项目说明与桌面端、Web 端界面预览，并更新项目归属及仓库链接。
+
+### Fixed
+
+- 修复从 Web 端删除站点后，旧客户端同步可能将其恢复的问题，确保删除状态能够正确同步到各客户端。
+
 ## 0.2.2 - 2026-06-16
 
 ### Changed
