@@ -110,7 +110,13 @@ export const ModalProvider = ({ children }: { children: ReactNode }) => {
 
   return (
     <ModalContext.Provider
-      value={{ openModal, closeModal, openAlert, openConfirm }}
+      value={{
+        hasOpenModal: modals.length > 0,
+        openModal,
+        closeModal,
+        openAlert,
+        openConfirm,
+      }}
     >
       {children}
       {modals.map((modal) => (

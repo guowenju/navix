@@ -8,6 +8,8 @@ export interface ModalOptions {
 }
 
 export interface ModalContextType {
+  /** 当前是否存在由全局模态框上下文管理的活动模态框。 */
+  hasOpenModal: boolean;
   openModal: (
     renderContent: (close: () => void) => ReactNode,
     options?: ModalOptions,

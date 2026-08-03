@@ -164,6 +164,7 @@ const LaunchpadPage = () => {
   const iconUrlsRef = useRef<Record<string, string>>({});
   const groupRefs = useRef<Record<string, HTMLElement | null>>({});
   const searchEngineMenuRef = useRef<HTMLDivElement | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
   const sidebarTriggerRef = useRef<HTMLDivElement | null>(null);
   const sidebarRef = useRef<HTMLElement | null>(null);
   const navigate = useNavigate();
@@ -485,6 +486,43 @@ const LaunchpadPage = () => {
   }, [searchEngineMenuOpen]);
 
   useEffect(() => {
+    // 全局监听 Escape，用于在搜索输入未聚焦时仍能清空搜索内容。
+    const handleGlobalEscape = (event: KeyboardEvent) => {
+      if (
+        event.key !== "Escape" ||
+        event.defaultPrevented ||
+        event.isComposing
+      ) {
+        return;
+      }
+
+      if (contextMenu || searchEngineMenuOpen) return;
+
+      // 弹窗负责处理自己的 Esc，避免修改被遮挡页面的搜索状态。
+      if (document.querySelector('[role="dialog"][aria-modal="true"]')) {
+        return;
+      }
+
+      const active = document.activeElement as HTMLElement | null;
+      const activeIsTypingField =
+        !!active &&
+        (active.tagName === "INPUT" ||
+          active.tagName === "TEXTAREA" ||
+          active.isContentEditable);
+
+      // 如果焦点在其它输入域并且不是 launchpad 的搜索框，则不干扰
+      if (activeIsTypingField && active !== searchInputRef.current) return;
+
+      setSearchTerm((currentSearchTerm) =>
+        currentSearchTerm.length > 0 ? "" : currentSearchTerm,
+      );
+    };
+
+    window.addEventListener("keydown", handleGlobalEscape);
+    return () => window.removeEventListener("keydown", handleGlobalEscape);
+  }, [contextMenu, searchEngineMenuOpen]);
+
+  useEffect(() => {
     if (!launchpadSidebarEnabled || filteredLaunchpad.length === 0) {
       return;
     }
@@ -789,6 +827,7 @@ const LaunchpadPage = () => {
 
                 <input
                   id="launchpad-search"
+                  ref={searchInputRef}
                   type="search"
                   className={styles.searchInput}
                   data-ui="launchpad-search-input"

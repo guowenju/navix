@@ -98,7 +98,7 @@ const LaunchpadPageContent: React.FC = () => {
     "bing-builtin",
   );
   const [isEngineModalOpen, setIsEngineModalOpen] = useState(false);
-
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
   const activeSearchEngine = useMemo(() => {
     return (
       allSearchEngines.find((engine) => engine.uuid === activeEngineUuid) ||
@@ -106,7 +106,7 @@ const LaunchpadPageContent: React.FC = () => {
     );
   }, [allSearchEngines, activeEngineUuid]);
 
-  const { openAlert, openConfirm } = useModal();
+  const { hasOpenModal, openAlert, openConfirm } = useModal();
 
   const scrollContainerRef = useRef<HTMLElement | null>(null);
   const scrollPosRef = useRef<number | null>(null);
@@ -177,6 +177,57 @@ const LaunchpadPageContent: React.FC = () => {
       scrollPosRef.current = null;
     }
   }, [groups, items]);
+
+  useEffect(() => {
+    // 全局监听 Escape，用于在搜索输入未聚焦时仍能清空搜索内容。
+    const handleGlobalEscape = (event: KeyboardEvent) => {
+      if (
+        event.key !== "Escape" ||
+        event.defaultPrevented ||
+        event.isComposing
+      ) {
+        return;
+      }
+
+      // 上下文菜单位于搜索结果上层，Esc 应优先关闭菜单。
+      if (contextMenu) {
+        event.preventDefault();
+        setContextMenu(null);
+        return;
+      }
+
+      if (
+        hasOpenModal ||
+        isNavConfigModalOpen ||
+        isItemModalOpen ||
+        isEngineModalOpen
+      )
+        return;
+
+      const active = document.activeElement as HTMLElement | null;
+      const activeIsTypingField =
+        !!active &&
+        (active.tagName === "INPUT" ||
+          active.tagName === "TEXTAREA" ||
+          active.isContentEditable);
+
+      // 如果焦点在其它输入域并且不是 launchpad 的搜索框，则不干扰
+      if (activeIsTypingField && active !== searchInputRef.current) return;
+
+      setSearchTerm((currentSearchTerm) =>
+        currentSearchTerm.length > 0 ? "" : currentSearchTerm,
+      );
+    };
+
+    window.addEventListener("keydown", handleGlobalEscape);
+    return () => window.removeEventListener("keydown", handleGlobalEscape);
+  }, [
+    contextMenu,
+    hasOpenModal,
+    isNavConfigModalOpen,
+    isItemModalOpen,
+    isEngineModalOpen,
+  ]);
 
   const handleNavConfigModalClose = (refresh?: boolean) => {
     setIsNavConfigModalOpen(false);
@@ -455,6 +506,7 @@ const LaunchpadPageContent: React.FC = () => {
               </SearchEngineIcon>
               <SearchInput
                 id="Launchpad-search-input"
+                ref={searchInputRef}
                 placeholder={t("launchpad.searchText")}
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}

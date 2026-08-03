@@ -2,6 +2,12 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，并遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### Changed
+
+- 允许在导航搜索框未聚焦时按 Esc 键清空搜索内容
+
 ## 0.2.3 - 2026-07-12
 
 ### Changed
