@@ -114,9 +114,39 @@ const markdownComponents: Components = {
   },
 };
 
+/**
+ * 过滤更新日志中的未发布区段，仅保留已经正式发布的版本内容。
+ */
+function filterUnreleasedSection(markdown: string): string {
+  const lines = markdown.split(/\r?\n/);
+  const unreleasedHeadingIndex = lines.findIndex((line) =>
+    /^##[\t ]+\[unreleased\][\t ]*$/i.test(line),
+  );
+
+  if (unreleasedHeadingIndex === -1) {
+    return markdown;
+  }
+
+  const nextVersionHeadingOffset = lines
+    .slice(unreleasedHeadingIndex + 1)
+    .findIndex((line) => /^##(?:[\t ]+|$)/.test(line));
+  const nextVersionHeadingIndex =
+    nextVersionHeadingOffset === -1
+      ? lines.length
+      : unreleasedHeadingIndex + nextVersionHeadingOffset + 1;
+
+  return [
+    ...lines.slice(0, unreleasedHeadingIndex),
+    ...lines.slice(nextVersionHeadingIndex),
+  ].join("\n");
+}
+
 const ChangelogPage: React.FC = () => {
   const { t } = useTranslation();
-  const changelogContent = useMemo(() => __CHANGELOG_CONTENT__, []);
+  const changelogContent = useMemo(
+    () => filterUnreleasedSection(__CHANGELOG_CONTENT__),
+    [],
+  );
 
   return (
     <ChangelogContainer>
