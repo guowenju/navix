@@ -1,4 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  arrayMove,
+  rectSortingStrategy,
+  sortableKeyboardCoordinates,
+  useSortable,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import { useNavigate, useOutletContext } from "react-router-dom";
 import { SelectField } from "@navix/shared-ui";
 import { apiFetch, apiFetchResponse, isAuthError } from "../api";
@@ -119,6 +136,93 @@ const DefaultIcon = ({ label, alt }: { label: string; alt: string }) => (
   </div>
 );
 
+interface SortableSiteCardProps {
+  site: LaunchpadWebsite;
+  isSorting: boolean;
+  isSaving: boolean;
+  interactionLocked: boolean;
+  localIconUrl: string | null;
+  defaultIconAlt: string;
+  moveLabel: string;
+  onOpen: (site: LaunchpadWebsite) => void;
+  onContextMenu: (event: React.MouseEvent, site: LaunchpadWebsite) => void;
+}
+
+/** 渲染支持鼠标、触屏和键盘拖动的站点卡片。 */
+const SortableSiteCard = ({
+  site,
+  isSorting,
+  isSaving,
+  interactionLocked,
+  localIconUrl,
+  defaultIconAlt,
+  moveLabel,
+  onOpen,
+  onContextMenu,
+}: SortableSiteCardProps) => {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: site.uuid, disabled: !isSorting || isSaving });
+
+  return (
+    <article
+      ref={setNodeRef}
+      style={{
+        transform: CSS.Transform.toString(transform),
+        transition: isDragging ? "none" : transition,
+      }}
+      className={`launchpad-site-card ${styles.siteCard}`}
+      data-ui="launchpad-site-card"
+      data-entity="launchpad-site"
+      data-site-uuid={site.uuid}
+      data-sorting={isSorting}
+      data-dragging={isDragging}
+      data-saving={isSaving}
+      data-interaction-locked={interactionLocked}
+      {...(isSorting ? attributes : {})}
+      {...(isSorting ? listeners : {})}
+      aria-label={isSorting ? moveLabel : undefined}
+      onClick={(event) => {
+        if (interactionLocked) {
+          event.preventDefault();
+          return;
+        }
+        onOpen(site);
+      }}
+      onContextMenu={(event) => {
+        if (interactionLocked) {
+          event.preventDefault();
+          return;
+        }
+        onContextMenu(event, site);
+      }}
+    >
+      <div className={styles.iconBubble}>
+        <DynamicIcon
+          alt={site.title}
+          className={iconStyles.icon}
+          defaultIcon={site.default_icon}
+          localIconUrl={localIconUrl}
+          fallback={
+            <DefaultIcon
+              label={site.title.charAt(0).toUpperCase()}
+              alt={defaultIconAlt}
+            />
+          }
+        />
+      </div>
+      <div className={styles.siteContent}>
+        <p className={styles.siteTitle}>{site.title}</p>
+      </div>
+    </article>
+  );
+};
+
 /**
  * 把服务端返回的站点数据映射成编辑弹窗使用的表单状态。
  *
@@ -213,6 +317,14 @@ const LaunchpadPage = () => {
   const [savingSite, setSavingSite] = useState(false);
   const [deletingSiteUuid, setDeletingSiteUuid] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
+  const [sortingGroupUuid, setSortingGroupUuid] = useState<string | null>(null);
+  const [savingOrderGroupUuid, setSavingOrderGroupUuid] = useState<
+    string | null
+  >(null);
+  const [sortError, setSortError] = useState<{
+    groupUuid: string;
+    message: string;
+  } | null>(null);
   const [activeSearchEngineId, setActiveSearchEngineId] =
     useState<SearchEngineId>(getStoredSearchEngineId);
   const [searchEngineMenuOpen, setSearchEngineMenuOpen] = useState(false);
@@ -228,8 +340,18 @@ const LaunchpadPage = () => {
   const iconFileInputRef = useRef<HTMLInputElement | null>(null);
   const sidebarTriggerRef = useRef<HTMLDivElement | null>(null);
   const sidebarRef = useRef<HTMLElement | null>(null);
+  const sortingSnapshotRef = useRef<{
+    groupUuid: string;
+    websites: LaunchpadWebsite[];
+  } | null>(null);
   const navigate = useNavigate();
   const { launchpadMode: mode } = useOutletContext<AppShellOutletContext>();
+  const sortSensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    }),
+  );
 
   const sortedLaunchpad = useMemo(() => {
     const byOrderThen = <T extends { sort_order?: number | null }>(
@@ -781,6 +903,135 @@ const LaunchpadPage = () => {
     });
   };
 
+  /** 恢复进入排序模式前的站点顺序。 */
+  const restoreSortingSnapshot = () => {
+    const snapshot = sortingSnapshotRef.current;
+    if (!snapshot) return;
+
+    setLaunchpad((current) =>
+      current.map((group) =>
+        group.uuid === snapshot.groupUuid
+          ? { ...group, websites: snapshot.websites }
+          : group,
+      ),
+    );
+    sortingSnapshotRef.current = null;
+    setSortingGroupUuid(null);
+  };
+
+  /** 更新搜索词，并在开始筛选时放弃尚未确认的排序。 */
+  const handleSearchTermChange = (value: string) => {
+    setSearchTerm(value);
+    if (value.trim()) {
+      restoreSortingSnapshot();
+      setSortError(null);
+    }
+  };
+
+  /** 进入排序模式，或在点击完成后一次性保存站点顺序。 */
+  const handleToggleSorting = async (groupUuid: string) => {
+    if (savingOrderGroupUuid || searchTerm.trim()) return;
+
+    if (sortingGroupUuid !== groupUuid) {
+      if (sortingGroupUuid) return;
+      const group = launchpad.find((item) => item.uuid === groupUuid);
+      if (!group) return;
+      sortingSnapshotRef.current = {
+        groupUuid,
+        websites: group.websites.map((site) => ({ ...site })),
+      };
+      setSortingGroupUuid(groupUuid);
+      setSortError(null);
+      setContextMenu(null);
+      return;
+    }
+
+    const group = launchpad.find((item) => item.uuid === groupUuid);
+    const snapshot = sortingSnapshotRef.current;
+    if (!group || !snapshot || snapshot.groupUuid !== groupUuid) return;
+
+    const itemUuids = group.websites.map((site) => site.uuid);
+    const originalItemUuids = snapshot.websites.map((site) => site.uuid);
+    const orderChanged = itemUuids.some(
+      (itemUuid, index) => itemUuid !== originalItemUuids[index],
+    );
+
+    if (!orderChanged) {
+      sortingSnapshotRef.current = null;
+      setSortingGroupUuid(null);
+      setSortError(null);
+      return;
+    }
+
+    const token = getUserAccessToken();
+    if (!token) {
+      clearUserAccessToken();
+      void navigate("/login");
+      return;
+    }
+
+    setSavingOrderGroupUuid(groupUuid);
+    setSortError(null);
+
+    try {
+      await apiFetch(
+        `/api/v1/launchpad/groups/${encodeURIComponent(groupUuid)}/items/order`,
+        {
+          method: "PUT",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ item_uuids: itemUuids }),
+        },
+      );
+      sortingSnapshotRef.current = null;
+      setSortingGroupUuid(null);
+    } catch (error) {
+      if (isAuthError(error)) {
+        clearUserAccessToken();
+        void navigate("/login");
+        return;
+      }
+      log.error("Failed to update website order", error);
+      sortingSnapshotRef.current = null;
+      setSortingGroupUuid(null);
+      setSortError({
+        groupUuid,
+        message: t("launchpad.sortFailed"),
+      });
+      await loadLaunchpad();
+    } finally {
+      setSavingOrderGroupUuid(null);
+    }
+  };
+
+  /** 仅更新本地站点顺序，点击完成排序后再统一持久化。 */
+  const handleSiteDragEnd = (groupUuid: string, event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id || savingOrderGroupUuid) return;
+
+    const group = launchpad.find((item) => item.uuid === groupUuid);
+    if (!group) return;
+    const oldIndex = group.websites.findIndex(
+      (site) => site.uuid === String(active.id),
+    );
+    const newIndex = group.websites.findIndex(
+      (site) => site.uuid === String(over.id),
+    );
+    if (oldIndex < 0 || newIndex < 0) return;
+
+    const reorderedSites = arrayMove(group.websites, oldIndex, newIndex).map(
+      (site, index) => ({ ...site, sort_order: index + 1 }),
+    );
+    setLaunchpad((current) =>
+      current.map((item) =>
+        item.uuid === groupUuid ? { ...item, websites: reorderedSites } : item,
+      ),
+    );
+    setSortError(null);
+  };
+
   const handleClearSearch = () => {
     setSearchTerm("");
   };
@@ -1061,7 +1312,9 @@ const LaunchpadPage = () => {
                   data-ui="launchpad-search-input"
                   placeholder={t("launchpad.searchPlaceholder")}
                   value={searchTerm}
-                  onChange={(event) => setSearchTerm(event.target.value)}
+                  onChange={(event) =>
+                    handleSearchTermChange(event.target.value)
+                  }
                   onKeyDown={handleSearchKeyDown}
                 />
 
@@ -1172,102 +1425,190 @@ const LaunchpadPage = () => {
                 className={`launchpad-group-list ${styles.groupList}`}
                 data-slot="launchpad-group-list"
               >
-                {filteredLaunchpad.map((group) => (
-                  <section
-                    key={group.uuid}
-                    id={group.uuid}
-                    ref={(element) => {
-                      groupRefs.current[group.uuid] = element;
-                    }}
-                    className={`launchpad-group-card ${styles.groupCard}`}
-                    data-ui="launchpad-group-card"
-                    data-entity="launchpad-group"
-                    data-group-uuid={group.uuid}
-                  >
-                    <div
-                      className={`launchpad-group-header ${styles.groupHeader}`}
-                      data-slot="launchpad-group-header"
+                {filteredLaunchpad.map((group) => {
+                  const isSorting = sortingGroupUuid === group.uuid;
+                  const isSavingOrder = savingOrderGroupUuid === group.uuid;
+                  const sortingDisabled =
+                    Boolean(searchTerm.trim()) ||
+                    group.websites.length < 2 ||
+                    Boolean(
+                      sortingGroupUuid && sortingGroupUuid !== group.uuid,
+                    ) ||
+                    Boolean(savingOrderGroupUuid);
+                  const sortLabel = isSavingOrder
+                    ? t("launchpad.sortSaving")
+                    : isSorting
+                      ? t("launchpad.sortDone")
+                      : t("launchpad.sortSites");
+
+                  return (
+                    <section
+                      key={group.uuid}
+                      id={group.uuid}
+                      ref={(element) => {
+                        groupRefs.current[group.uuid] = element;
+                      }}
+                      className={`launchpad-group-card ${styles.groupCard}`}
+                      data-ui="launchpad-group-card"
+                      data-entity="launchpad-group"
+                      data-group-uuid={group.uuid}
+                      data-sorting={isSorting}
                     >
-                      <div className={styles.groupTitleRow}>
-                        <p className={styles.groupName}>{group.name}</p>
-                        <button
-                          type="button"
-                          className={styles.groupAddButton}
-                          data-ui="launchpad-add-site"
-                          data-group-uuid={group.uuid}
-                          aria-label={t("launchpad.addToGroup", {
-                            group: group.name,
-                          })}
-                          title={t("launchpad.addSite")}
-                          onClick={(event) => {
-                            siteFormReturnFocusRef.current =
-                              event.currentTarget;
-                            prepareSiteForm(toCreateForm(group.uuid));
-                          }}
-                        >
-                          <svg
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            aria-hidden="true"
+                      <div
+                        className={`launchpad-group-header ${styles.groupHeader}`}
+                        data-slot="launchpad-group-header"
+                      >
+                        <div className={styles.groupTitleRow}>
+                          <p className={styles.groupName}>{group.name}</p>
+                          <button
+                            type="button"
+                            className={styles.groupActionButton}
+                            data-ui="launchpad-sort-sites"
+                            data-group-uuid={group.uuid}
+                            data-active={isSorting}
+                            aria-label={sortLabel}
+                            aria-pressed={isSorting}
+                            title={
+                              sortingDisabled && !isSorting
+                                ? undefined
+                                : sortLabel
+                            }
+                            disabled={
+                              isSavingOrder || (sortingDisabled && !isSorting)
+                            }
+                            onClick={() => void handleToggleSorting(group.uuid)}
                           >
-                            <path
-                              d="M12 5v14M5 12h14"
-                              stroke="currentColor"
-                              strokeWidth="1.8"
-                              strokeLinecap="round"
-                            />
-                          </svg>
-                        </button>
-                      </div>
-                      <span className={styles.groupBadge}>
-                        {t("launchpad.sitesCount", {
-                          count: group.websites.length,
-                        })}
-                      </span>
-                    </div>
-                    <div
-                      className={`launchpad-site-grid ${styles.siteGrid}`}
-                      data-slot="launchpad-site-grid"
-                    >
-                      {group.websites.map((site) => (
-                        <article
-                          key={site.uuid}
-                          className={`launchpad-site-card ${styles.siteCard}`}
-                          data-ui="launchpad-site-card"
-                          data-entity="launchpad-site"
-                          data-site-uuid={site.uuid}
-                          onClick={() => handleOpenSite(site)}
-                          onContextMenu={(e) => handleContextMenu(e, site)}
-                        >
-                          <div className={styles.iconBubble}>
-                            <DynamicIcon
-                              alt={site.title}
-                              className={iconStyles.icon}
-                              defaultIcon={site.default_icon}
-                              localIconUrl={
-                                site.local_icon_path &&
-                                iconUrls[site.uuid]?.path ===
-                                  site.local_icon_path &&
-                                iconErrors[site.uuid] !== site.local_icon_path
-                                  ? iconUrls[site.uuid].objectUrl
-                                  : null
-                              }
-                              fallback={
-                                <DefaultIcon
-                                  label={site.title.charAt(0).toUpperCase()}
-                                  alt={t("launchpad.defaultIcon")}
+                            {isSorting ? (
+                              <svg
+                                viewBox="0 0 512 512"
+                                fill="none"
+                                aria-hidden="true"
+                              >
+                                <path
+                                  d="M465 127 241 384l-92-92m-9 93-93-93m316-165L236 273"
+                                  stroke="currentColor"
+                                  strokeWidth="44"
+                                  strokeLinecap="square"
+                                  strokeMiterlimit="10"
                                 />
-                              }
-                            />
+                              </svg>
+                            ) : (
+                              <svg
+                                viewBox="0 0 512 512"
+                                fill="none"
+                                aria-hidden="true"
+                              >
+                                <path
+                                  d="M464 208 352 96 240 208m112-94.87V416M48 304l112 112 112-112m-112 94V96"
+                                  stroke="currentColor"
+                                  strokeWidth="32"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                />
+                              </svg>
+                            )}
+                          </button>
+                          <button
+                            type="button"
+                            className={styles.groupActionButton}
+                            data-ui="launchpad-add-site"
+                            data-group-uuid={group.uuid}
+                            aria-label={t("launchpad.addToGroup", {
+                              group: group.name,
+                            })}
+                            title={
+                              sortingGroupUuid || savingOrderGroupUuid
+                                ? undefined
+                                : t("launchpad.addSite")
+                            }
+                            disabled={Boolean(
+                              sortingGroupUuid || savingOrderGroupUuid,
+                            )}
+                            onClick={(event) => {
+                              siteFormReturnFocusRef.current =
+                                event.currentTarget;
+                              prepareSiteForm(toCreateForm(group.uuid));
+                            }}
+                          >
+                            <svg
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              aria-hidden="true"
+                            >
+                              <path
+                                d="M12 5v14M5 12h14"
+                                stroke="currentColor"
+                                strokeWidth="1.8"
+                                strokeLinecap="round"
+                              />
+                            </svg>
+                          </button>
+                        </div>
+                        <span className={styles.groupBadge}>
+                          {t("launchpad.sitesCount", {
+                            count: group.websites.length,
+                          })}
+                        </span>
+                      </div>
+                      {sortError?.groupUuid === group.uuid ? (
+                        <p
+                          className={styles.sortError}
+                          data-ui="launchpad-sort-error"
+                          data-group-uuid={group.uuid}
+                          role="alert"
+                        >
+                          {sortError.message}
+                        </p>
+                      ) : null}
+                      <DndContext
+                        sensors={sortSensors}
+                        collisionDetection={closestCenter}
+                        onDragEnd={(event) =>
+                          handleSiteDragEnd(group.uuid, event)
+                        }
+                      >
+                        <SortableContext
+                          items={group.websites.map((site) => site.uuid)}
+                          strategy={rectSortingStrategy}
+                          disabled={!isSorting || isSavingOrder}
+                        >
+                          <div
+                            className={`launchpad-site-grid ${styles.siteGrid}`}
+                            data-slot="launchpad-site-grid"
+                            data-sorting={isSorting}
+                            data-saving={isSavingOrder}
+                          >
+                            {group.websites.map((site) => (
+                              <SortableSiteCard
+                                key={site.uuid}
+                                site={site}
+                                isSorting={isSorting}
+                                isSaving={isSavingOrder}
+                                interactionLocked={Boolean(
+                                  sortingGroupUuid || savingOrderGroupUuid,
+                                )}
+                                localIconUrl={
+                                  site.local_icon_path &&
+                                  iconUrls[site.uuid]?.path ===
+                                    site.local_icon_path &&
+                                  iconErrors[site.uuid] !== site.local_icon_path
+                                    ? iconUrls[site.uuid].objectUrl
+                                    : null
+                                }
+                                defaultIconAlt={t("launchpad.defaultIcon")}
+                                moveLabel={t("launchpad.moveSite", {
+                                  title: site.title,
+                                })}
+                                onOpen={handleOpenSite}
+                                onContextMenu={handleContextMenu}
+                              />
+                            ))}
                           </div>
-                          <div className={styles.siteContent}>
-                            <p className={styles.siteTitle}>{site.title}</p>
-                          </div>
-                        </article>
-                      ))}
-                    </div>
-                  </section>
-                ))}
+                        </SortableContext>
+                      </DndContext>
+                    </section>
+                  );
+                })}
               </div>
             ) : launchpad.length === 0 ? (
               <div className={styles.stateCard} data-ui="launchpad-empty">

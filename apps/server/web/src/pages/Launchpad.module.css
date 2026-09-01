@@ -521,7 +521,7 @@
   color: var(--app-text-primary);
 }
 
-.groupAddButton {
+.groupActionButton {
   width: 32px;
   height: 32px;
   flex: 0 0 32px;
@@ -540,23 +540,38 @@
     background-color 0.2s ease;
 }
 
-.groupAddButton svg {
+.groupActionButton svg {
   width: 18px;
   height: 18px;
 }
 
-.groupHeader:hover .groupAddButton,
-.groupHeader:focus-within .groupAddButton,
-.groupAddButton:focus-visible {
+.groupHeader:hover .groupActionButton,
+.groupHeader:focus-within .groupActionButton,
+.groupActionButton:focus-visible,
+.groupActionButton[data-active="true"] {
   opacity: 1;
 }
 
-.groupAddButton:hover,
-.groupAddButton:focus-visible {
+.groupActionButton:hover:not(:disabled),
+.groupActionButton:focus-visible,
+.groupActionButton[data-active="true"] {
   border-color: var(--app-accent-border);
   background: var(--app-accent-soft);
   color: var(--app-text-primary);
   outline: none;
+}
+
+.groupActionButton:focus-visible {
+  box-shadow: 0 0 0 2px var(--app-accent-border);
+}
+
+.groupActionButton:disabled {
+  cursor: not-allowed;
+}
+
+.groupHeader:hover .groupActionButton:disabled,
+.groupHeader:focus-within .groupActionButton:disabled {
+  opacity: 0.38;
 }
 
 .groupBadge {
@@ -576,6 +591,7 @@
 }
 
 .siteCard {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -588,17 +604,56 @@
   padding: 12px 10px;
   cursor: pointer;
   transition:
+    box-shadow 0.2s ease,
+    border-color 0.2s ease;
+}
+
+.siteCard:not([data-sorting="true"]) {
+  transition:
     transform 0.2s ease,
     box-shadow 0.2s ease,
     border-color 0.2s ease;
 }
 
-.siteCard:hover,
+.siteCard:hover:not([data-sorting="true"]),
 .siteCard:focus-visible {
   transform: translateY(-1px);
   box-shadow: 0 12px 22px rgba(8, 12, 22, 0.12);
   border-color: var(--app-accent-border);
   outline: none;
+}
+
+.siteCard[data-sorting="true"] {
+  border-color: color-mix(in srgb, var(--app-accent-border) 68%, transparent);
+  cursor: grab;
+  touch-action: none;
+}
+
+.siteCard[data-dragging="true"] {
+  z-index: 2;
+  border-color: var(--app-accent-border);
+  background: color-mix(in srgb, var(--app-card-bg-strong) 86%, transparent);
+  box-shadow: var(--app-shadow-hard);
+  cursor: grabbing;
+  opacity: 0.8;
+}
+
+.siteCard[data-saving="true"] {
+  cursor: wait;
+}
+
+.siteCard[data-interaction-locked="true"]:not([data-sorting="true"]) {
+  cursor: default;
+}
+
+.sortError {
+  margin: -4px 0 12px;
+  padding: 9px 11px;
+  border: 1px solid rgba(248, 113, 113, 0.38);
+  border-radius: 12px;
+  background: rgba(248, 113, 113, 0.12);
+  color: color-mix(in srgb, #ef4444 72%, var(--app-text-primary));
+  font-size: 0.84rem;
 }
 
 .contextMenu {
@@ -963,13 +1018,18 @@
 }
 
 @media (hover: none) {
-  .groupAddButton {
+  .groupActionButton {
     opacity: 1;
+  }
+
+  .groupActionButton:disabled {
+    opacity: 0.38;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .groupAddButton,
+  .groupActionButton,
+  .siteCard,
   .iconActionButton {
     transition: none;
   }

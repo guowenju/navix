@@ -4,7 +4,7 @@ use crate::api::handlers::admin_handler::{
 };
 use crate::api::handlers::navigation_handler::{
     create_navigation_item_handler, delete_navigation_item_handler, get_navigation_handler,
-    update_navigation_item_handler,
+    reorder_navigation_items_handler, update_navigation_item_handler,
 };
 use crate::api::handlers::sync_handler::{
     icon_download_handler, icon_upload_handler, sync_chunk_handler, sync_complete_handler,
@@ -81,6 +81,10 @@ pub fn protected_api_v1_protected() -> Router<Arc<AppState>> {
         .route(
             "/launchpad/items/{uuid}",
             delete(delete_navigation_item_handler),
+        )
+        .route(
+            "/launchpad/groups/{group_uuid}/items/order",
+            put(reorder_navigation_items_handler),
         )
         .route("/welcome", get(welcome))
         .route("/user/username", put(change_username_handler))

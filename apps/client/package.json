@@ -18,9 +18,9 @@
   "dependencies": {
     "@navix/shared-ts": "workspace:*",
     "@navix/shared-ui": "workspace:*",
-    "@dnd-kit/core": "6.3.1",
-    "@dnd-kit/sortable": "10.0.0",
-    "@dnd-kit/utilities": "3.2.2",
+    "@dnd-kit/core": "catalog:",
+    "@dnd-kit/sortable": "catalog:",
+    "@dnd-kit/utilities": "catalog:",
     "@iconify/react": "catalog:",
     "@tauri-apps/api": "2.11.0",
     "@tauri-apps/plugin-autostart": "2.5.1",

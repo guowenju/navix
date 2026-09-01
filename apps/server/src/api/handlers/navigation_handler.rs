@@ -4,10 +4,12 @@ use crate::api::response::ApiResponse;
 use crate::api::routes::AppState;
 use crate::api::routes::jwt::Claims;
 use crate::error::{ApiError, ApiResult};
-use crate::models::website::{CreateWebsitePayload, NavigationGroup, UpdateWebsitePayload};
+use crate::models::website::{
+    CreateWebsitePayload, NavigationGroup, ReorderWebsiteItemsPayload, UpdateWebsitePayload,
+};
 use crate::services::navigation_service;
 use axum::extract::multipart::Field;
-use axum::extract::{Multipart, Path, State};
+use axum::extract::{Json, Multipart, Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use serde::de::DeserializeOwned;
@@ -154,6 +156,24 @@ pub async fn update_navigation_item_handler(
     .await?;
 
     Ok(ApiResponse::ok("站点更新成功"))
+}
+
+/// 更新当前登录用户指定分组内的完整站点顺序。
+pub async fn reorder_navigation_items_handler(
+    claims: Claims,
+    State(state): State<Arc<AppState>>,
+    Path(group_uuid): Path<String>,
+    Json(payload): Json<ReorderWebsiteItemsPayload>,
+) -> ApiResult<impl IntoResponse> {
+    navigation_service::reorder_websites_for_user(
+        &state.pool,
+        &claims.sub,
+        &group_uuid,
+        &payload.item_uuids,
+    )
+    .await?;
+
+    Ok(ApiResponse::ok("Website order updated successfully"))
 }
 
 /// 删除当前登录用户的单个导航站点。

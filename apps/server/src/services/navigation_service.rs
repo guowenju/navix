@@ -8,7 +8,7 @@ use crate::models::website::{
     UpdateWebsitePayload, WebsiteGroupDto, WebsiteIconAction, WebsitesDto,
 };
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use uuid::Uuid;
@@ -457,6 +457,89 @@ pub async fn update_website_for_user(
     Ok(())
 }
 
+/// 原子更新当前用户指定分组内的完整站点顺序。
+pub async fn reorder_websites_for_user(
+    pool: &DbPool,
+    user_uuid: &str,
+    group_uuid: &str,
+    item_uuids: &[String],
+) -> ApiResult<()> {
+    let mut transaction = pool.begin().await?;
+    let group_exists = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT uuid
+        FROM website_groups
+        WHERE uuid = ?1 AND user_uuid = ?2 AND is_deleted = 0
+        LIMIT 1
+        "#,
+    )
+    .bind(group_uuid)
+    .bind(user_uuid)
+    .fetch_optional(transaction.as_mut())
+    .await?;
+    if group_exists.is_none() {
+        return Err(ApiError::ResourceNotFound);
+    }
+
+    let active_items_by_uuid = sqlx::query_as::<_, (String, Option<i64>)>(
+        r#"
+        SELECT uuid, sort_order
+        FROM websites
+        WHERE group_uuid = ?1 AND user_uuid = ?2 AND is_deleted = 0
+        "#,
+    )
+    .bind(group_uuid)
+    .bind(user_uuid)
+    .fetch_all(transaction.as_mut())
+    .await?
+    .into_iter()
+    .collect::<HashMap<_, _>>();
+
+    let submitted_items = item_uuids
+        .iter()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
+    let active_items = active_items_by_uuid
+        .keys()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
+    if submitted_items.len() != item_uuids.len() || submitted_items != active_items {
+        return Err(ApiError::BadRequest(
+            "Item order must contain every active website in the target group exactly once"
+                .to_string(),
+        ));
+    }
+
+    for (index, item_uuid) in item_uuids.iter().enumerate() {
+        let desired_sort_order = index as i64 + 1;
+        if active_items_by_uuid.get(item_uuid) == Some(&Some(desired_sort_order)) {
+            continue;
+        }
+
+        let result = sqlx::query(
+            r#"
+            UPDATE websites
+            SET sort_order = ?1
+            WHERE uuid = ?2 AND group_uuid = ?3 AND user_uuid = ?4 AND is_deleted = 0
+            "#,
+        )
+        .bind(desired_sort_order)
+        .bind(item_uuid)
+        .bind(group_uuid)
+        .bind(user_uuid)
+        .execute(transaction.as_mut())
+        .await?;
+        if result.rows_affected() != 1 {
+            return Err(ApiError::BadRequest(
+                "Website order changed while the request was being processed".to_string(),
+            ));
+        }
+    }
+
+    transaction.commit().await?;
+    Ok(())
+}
+
 /// 删除当前用户的站点。
 pub async fn delete_website_for_user(
     pool: &DbPool,
@@ -504,8 +587,8 @@ fn compare_sort_then_title(
 #[cfg(test)]
 mod tests {
     use super::{
-        WEBSITE_ICON_MAX_BYTES, create_website_for_user, update_website_for_user,
-        validate_website_icon,
+        WEBSITE_ICON_MAX_BYTES, create_website_for_user, reorder_websites_for_user,
+        update_website_for_user, validate_website_icon,
     };
     use crate::config::STORAGE_BASE_DIR;
     use crate::error::ApiError;
@@ -546,8 +629,24 @@ mod tests {
                 description TEXT,
                 background_color TEXT,
                 sort_order INTEGER,
-                is_deleted INTEGER NOT NULL DEFAULT 0
+                is_deleted INTEGER NOT NULL DEFAULT 0,
+                rev INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL DEFAULT 'initial'
             )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"
+            CREATE TRIGGER set_test_websites_updated_at
+            AFTER UPDATE OF sort_order ON websites FOR EACH ROW
+            BEGIN
+                UPDATE websites
+                SET rev = OLD.rev + 1, updated_at = 'changed'
+                WHERE uuid = OLD.uuid;
+            END
             "#,
         )
         .execute(&pool)
@@ -615,6 +714,37 @@ mod tests {
         .unwrap();
     }
 
+    async fn insert_ordered_sites(
+        pool: &SqlitePool,
+        user_uuid: &str,
+        group_uuid: &str,
+        sites: &[(&str, i64)],
+    ) {
+        sqlx::query("INSERT INTO website_groups (uuid, user_uuid) VALUES (?1, ?2)")
+            .bind(group_uuid)
+            .bind(user_uuid)
+            .execute(pool)
+            .await
+            .unwrap();
+        for (site_uuid, sort_order) in sites {
+            sqlx::query(
+                r#"
+                INSERT INTO websites (
+                    uuid, user_uuid, group_uuid, title, url, default_icon, sort_order
+                ) VALUES (?1, ?2, ?3, ?1, 'https://example.com', ?4, ?5)
+                "#,
+            )
+            .bind(site_uuid)
+            .bind(user_uuid)
+            .bind(group_uuid)
+            .bind(DEFAULT_WEBSITE_ICON)
+            .bind(sort_order)
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+    }
+
     #[tokio::test]
     async fn create_site_uses_default_icon() {
         let pool = create_test_pool().await;
@@ -650,6 +780,149 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(error, ApiError::ResourceNotFound));
+    }
+
+    #[tokio::test]
+    async fn reorders_every_site_in_group() {
+        let pool = create_test_pool().await;
+        insert_ordered_sites(
+            &pool,
+            "user-a",
+            "group-a",
+            &[("site-a", 1), ("site-b", 2), ("site-c", 3)],
+        )
+        .await;
+
+        reorder_websites_for_user(
+            &pool,
+            "user-a",
+            "group-a",
+            &["site-c".into(), "site-a".into(), "site-b".into()],
+        )
+        .await
+        .unwrap();
+
+        let ordered: Vec<String> = sqlx::query_scalar(
+            "SELECT uuid FROM websites WHERE group_uuid = 'group-a' ORDER BY sort_order",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(ordered, ["site-c", "site-a", "site-b"]);
+    }
+
+    #[tokio::test]
+    async fn reorder_only_updates_sites_whose_position_changed() {
+        let pool = create_test_pool().await;
+        insert_ordered_sites(
+            &pool,
+            "user-a",
+            "group-a",
+            &[("site-a", 1), ("site-b", 2), ("site-c", 3), ("site-d", 4)],
+        )
+        .await;
+        let reordered = [
+            "site-a".into(),
+            "site-c".into(),
+            "site-b".into(),
+            "site-d".into(),
+        ];
+
+        reorder_websites_for_user(&pool, "user-a", "group-a", &reordered)
+            .await
+            .unwrap();
+        reorder_websites_for_user(&pool, "user-a", "group-a", &reordered)
+            .await
+            .unwrap();
+
+        let versions: Vec<(String, i64, String)> = sqlx::query_as(
+            r#"
+            SELECT uuid, rev, updated_at
+            FROM websites
+            WHERE group_uuid = 'group-a'
+            ORDER BY uuid
+            "#,
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            versions,
+            [
+                ("site-a".into(), 0, "initial".into()),
+                ("site-b".into(), 1, "changed".into()),
+                ("site-c".into(), 1, "changed".into()),
+                ("site-d".into(), 0, "initial".into()),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn reorder_rejects_group_owned_by_another_user() {
+        let pool = create_test_pool().await;
+        insert_ordered_sites(&pool, "user-b", "group-a", &[("site-a", 1)]).await;
+
+        let error = reorder_websites_for_user(&pool, "user-a", "group-a", &["site-a".into()])
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ApiError::ResourceNotFound));
+    }
+
+    #[tokio::test]
+    async fn reorder_rejects_incomplete_duplicate_extra_and_cross_group_items() {
+        for submitted in [
+            vec!["site-a".into()],
+            vec!["site-a".into(), "site-a".into()],
+            vec!["site-a".into(), "site-b".into(), "missing".into()],
+            vec!["site-a".into(), "site-c".into()],
+        ] {
+            let pool = create_test_pool().await;
+            insert_ordered_sites(&pool, "user-a", "group-a", &[("site-a", 1), ("site-b", 2)]).await;
+            if submitted.iter().any(|uuid| uuid == "site-c") {
+                insert_ordered_sites(&pool, "user-a", "group-b", &[("site-c", 1)]).await;
+            }
+
+            let error = reorder_websites_for_user(&pool, "user-a", "group-a", &submitted)
+                .await
+                .unwrap_err();
+            assert!(matches!(error, ApiError::BadRequest(_)));
+        }
+    }
+
+    #[tokio::test]
+    async fn reorder_rolls_back_when_an_update_fails() {
+        let pool = create_test_pool().await;
+        insert_ordered_sites(&pool, "user-a", "group-a", &[("site-a", 2), ("site-b", 1)]).await;
+        sqlx::query(
+            r#"
+            CREATE TRIGGER fail_second_order_update
+            BEFORE UPDATE OF sort_order ON websites
+            WHEN NEW.uuid = 'site-b'
+            BEGIN
+                SELECT RAISE(FAIL, 'forced');
+            END
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let result = reorder_websites_for_user(
+            &pool,
+            "user-a",
+            "group-a",
+            &["site-a".into(), "site-b".into()],
+        )
+        .await;
+        assert!(result.is_err());
+
+        let orders: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT uuid, sort_order FROM websites WHERE group_uuid = 'group-a' ORDER BY uuid",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(orders, [("site-a".into(), 2), ("site-b".into(), 1)]);
     }
 
     #[tokio::test]

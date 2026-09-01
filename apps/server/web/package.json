@@ -13,6 +13,9 @@
     "format": "prettier --write src/"
   },
   "dependencies": {
+    "@dnd-kit/core": "catalog:",
+    "@dnd-kit/sortable": "catalog:",
+    "@dnd-kit/utilities": "catalog:",
     "@iconify/react": "catalog:",
     "@navix/shared-ts": "workspace:*",
     "@navix/shared-ui": "workspace:*",

@@ -103,6 +103,12 @@ pub struct UpdateWebsitePayload {
     pub icon_action: WebsiteIconAction,
 }
 
+/// Web 端提交的分组内站点完整排序。
+#[derive(Debug, Deserialize)]
+pub struct ReorderWebsiteItemsPayload {
+    pub item_uuids: Vec<String>,
+}
+
 /// 校验创建和更新站点共用的基础字段。
 fn validate_website_fields(
     title: &str,

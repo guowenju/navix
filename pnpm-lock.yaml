@@ -6,6 +6,15 @@ settings:
 
 catalogs:
   default:
+    '@dnd-kit/core':
+      specifier: 6.3.1
+      version: 6.3.1
+    '@dnd-kit/sortable':
+      specifier: 10.0.0
+      version: 10.0.0
+    '@dnd-kit/utilities':
+      specifier: 3.2.2
+      version: 3.2.2
     '@eslint/js':
       specifier: 10.0.1
       version: 10.0.1
@@ -105,13 +114,13 @@ importers:
   apps/client:
     dependencies:
       '@dnd-kit/core':
-        specifier: 6.3.1
+        specifier: 'catalog:'
         version: 6.3.1(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
       '@dnd-kit/sortable':
-        specifier: 10.0.0
+        specifier: 'catalog:'
         version: 10.0.0(@dnd-kit/core@6.3.1(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(react@19.2.3)
       '@dnd-kit/utilities':
-        specifier: 3.2.2
+        specifier: 'catalog:'
         version: 3.2.2(react@19.2.3)
       '@iconify/react':
         specifier: 'catalog:'
@@ -225,6 +234,15 @@ importers:
 
   apps/server/web:
     dependencies:
+      '@dnd-kit/core':
+        specifier: 'catalog:'
+        version: 6.3.1(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
+      '@dnd-kit/sortable':
+        specifier: 'catalog:'
+        version: 10.0.0(@dnd-kit/core@6.3.1(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(react@19.2.3)
+      '@dnd-kit/utilities':
+        specifier: 'catalog:'
+        version: 3.2.2(react@19.2.3)
       '@iconify/react':
         specifier: 'catalog:'
         version: 6.0.2(react@19.2.3)
