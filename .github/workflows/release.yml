@@ -6,13 +6,13 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Version to release, for example 0.1.0-alpha.1
+        description: Version to release, for example 0.1.0
         required: true
         type: string
       prerelease:
         description: Mark this release as a prerelease
         required: true
-        default: true
+        default: false
         type: boolean
 
 jobs:
