@@ -37,7 +37,6 @@ This monorepo uses two workspaces: Rust (`Cargo.toml`) and Node (`pnpm-workspace
 
 - Add Chinese documentation comments for frontend/backend functions, structs, and modules; Rust docs must use `//!` and `///` and comply with `cargo doc` conventions.
 - CHANGELOG entries should be user-facing; avoid implementation details and internal refactors.
-- Please use Chinese for document content (including README and design documents).
 
 ## Commit & Pull Request Guidelines
 
@@ -53,7 +52,3 @@ This monorepo uses two workspaces: Rust (`Cargo.toml`) and Node (`pnpm-workspace
 - After modifying both frontend and backend code, run `pnpm format:all` and `pnpm check:all` before final verification.
 - During refactor compatibility is not required; prioritize a clean redesign.
 - When a bug is caused by backend, engine, state machine, or lifecycle timing issues, do not add frontend “stopgap” patches to mask it. Fix the source of truth first, and only adjust frontend logic when the root cause is genuinely on the frontend side.
-
-## Communication
-
-- Please respond in chinese by default.
