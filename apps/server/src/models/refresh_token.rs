@@ -3,8 +3,8 @@ use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-/// Refresh Token 的生命周期，例如 30 天
-const REFRESH_TOKEN_LIFETIME_DAYS: i64 = 30;
+/// Refresh Token 的生命周期，例如 180 天。
+const REFRESH_TOKEN_LIFETIME_DAYS: i64 = 180;
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct RefreshToken {
