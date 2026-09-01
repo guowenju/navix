@@ -1,12 +1,27 @@
 //! 导航数据读取与管理服务。
 
+use crate::config::STORAGE_BASE_DIR;
 use crate::db::DbPool;
 use crate::error::{ApiError, ApiResult};
 use crate::models::website::{
-    NavigationGroup, NavigationWebsite, UpdateWebsitePayload, WebsiteGroupDto, WebsitesDto,
+    CreateWebsitePayload, DEFAULT_WEBSITE_ICON, NavigationGroup, NavigationWebsite,
+    UpdateWebsitePayload, WebsiteGroupDto, WebsiteIconAction, WebsitesDto,
 };
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use tokio::fs;
+use uuid::Uuid;
+
+/// Web 端单个站点图标允许的最大体积（5 MiB）。
+pub const WEBSITE_ICON_MAX_BYTES: usize = 5 * 1024 * 1024;
+
+/// 已通过内容与扩展名校验、可以安全落盘的站点图标。
+#[derive(Debug)]
+pub struct ValidatedWebsiteIcon {
+    pub bytes: Vec<u8>,
+    pub extension: &'static str,
+}
 
 /// 获取指定用户的导航数据，只返回未删除的分组和网站。
 pub async fn fetch_navigation_for_user(
@@ -85,18 +100,254 @@ pub async fn fetch_navigation_for_user(
     Ok(groups)
 }
 
+/// 校验上传图标的扩展名、文件签名和 SVG 主动内容。
+pub fn validate_website_icon(file_name: &str, bytes: Vec<u8>) -> ApiResult<ValidatedWebsiteIcon> {
+    if bytes.is_empty() {
+        return Err(ApiError::BadRequest(
+            "Icon file must not be empty".to_string(),
+        ));
+    }
+    if bytes.len() > WEBSITE_ICON_MAX_BYTES {
+        return Err(ApiError::BadRequest(
+            "Icon file must not exceed 5 MiB".to_string(),
+        ));
+    }
+
+    let extension = Path::new(file_name)
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase)
+        .ok_or_else(|| ApiError::BadRequest("Icon file has no valid extension".to_string()))?;
+
+    let normalized_extension = match extension.as_str() {
+        "png" if bytes.starts_with(b"\x89PNG\r\n\x1a\n") => "png",
+        "jpg" | "jpeg" if bytes.starts_with(&[0xff, 0xd8, 0xff]) => "jpg",
+        "webp" if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" => {
+            "webp"
+        }
+        "gif" if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") => "gif",
+        "ico" if bytes.starts_with(&[0x00, 0x00, 0x01, 0x00]) => "ico",
+        "svg" => {
+            validate_svg(&bytes)?;
+            "svg"
+        }
+        "png" | "jpg" | "jpeg" | "webp" | "gif" | "ico" => {
+            return Err(ApiError::BadRequest(
+                "Icon file content does not match its extension".to_string(),
+            ));
+        }
+        _ => {
+            return Err(ApiError::BadRequest(
+                "Only PNG, JPG, WebP, GIF, ICO, and SVG icons are supported".to_string(),
+            ));
+        }
+    };
+
+    Ok(ValidatedWebsiteIcon {
+        bytes,
+        extension: normalized_extension,
+    })
+}
+
+/// 对 SVG 做基础格式检查，并拒绝明显的脚本内容。
+fn validate_svg(bytes: &[u8]) -> ApiResult<()> {
+    let svg = std::str::from_utf8(bytes)
+        .map_err(|_| ApiError::BadRequest("SVG icon must use UTF-8 encoding".to_string()))?;
+    let lower = svg.to_ascii_lowercase();
+    let trimmed = lower.trim_start_matches('\u{feff}').trim_start();
+    let root = if trimmed.starts_with("<?xml") {
+        trimmed
+            .find("?>")
+            .map(|index| trimmed[index + 2..].trim_start())
+            .ok_or_else(|| ApiError::BadRequest("SVG XML declaration is incomplete".to_string()))?
+    } else {
+        trimmed
+    };
+
+    let has_svg_root = root.strip_prefix("<svg").is_some_and(|remaining| {
+        remaining
+            .chars()
+            .next()
+            .is_some_and(|character| character == '>' || character.is_whitespace())
+    });
+    if !has_svg_root {
+        return Err(ApiError::BadRequest(
+            "SVG file is missing an svg root element".to_string(),
+        ));
+    }
+
+    if lower.contains("<script") || lower.contains("javascript:") {
+        return Err(ApiError::BadRequest(
+            "SVG icon contains unsafe script content".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+/// 验证目标分组属于当前用户且仍有效。
+async fn ensure_group_owner(pool: &DbPool, user_uuid: &str, group_uuid: &str) -> ApiResult<()> {
+    let target_group = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT uuid
+        FROM website_groups
+        WHERE uuid = ?1 AND user_uuid = ?2 AND is_deleted = 0
+        LIMIT 1
+        "#,
+    )
+    .bind(group_uuid)
+    .bind(user_uuid)
+    .fetch_optional(pool)
+    .await?;
+
+    if target_group.is_none() {
+        return Err(ApiError::ResourceNotFound);
+    }
+    Ok(())
+}
+
+/// 将站点图标写入当前用户的专属目录，并返回数据库保存的安全文件名。
+async fn write_website_icon(
+    user_uuid: &str,
+    website_uuid: &str,
+    icon: &ValidatedWebsiteIcon,
+) -> ApiResult<String> {
+    let user_icon_dir = PathBuf::from(STORAGE_BASE_DIR).join(user_uuid);
+    fs::create_dir_all(&user_icon_dir).await?;
+    let file_name = format!("{website_uuid}-{}.{}", Uuid::new_v4(), icon.extension);
+    let final_path = user_icon_dir.join(&file_name);
+    let temporary_path = user_icon_dir.join(format!(".{file_name}.tmp"));
+
+    fs::write(&temporary_path, &icon.bytes).await?;
+    if let Err(error) = fs::rename(&temporary_path, &final_path).await {
+        let _ = fs::remove_file(&temporary_path).await;
+        return Err(error.into());
+    }
+    Ok(file_name)
+}
+
+/// 删除没有被任何有效站点或搜索引擎继续引用的图标文件。
+async fn remove_icon_if_unreferenced(
+    pool: &DbPool,
+    user_uuid: &str,
+    file_name: &str,
+) -> ApiResult<()> {
+    let reference_count = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT
+            (SELECT COUNT(*) FROM websites
+             WHERE user_uuid = ?1 AND local_icon_path = ?2 AND is_deleted = 0)
+          + (SELECT COUNT(*) FROM search_engines
+             WHERE user_uuid = ?1 AND local_icon_path = ?2 AND is_deleted = 0)
+        "#,
+    )
+    .bind(user_uuid)
+    .bind(file_name)
+    .fetch_one(pool)
+    .await?;
+
+    if reference_count == 0 {
+        let path = PathBuf::from(STORAGE_BASE_DIR)
+            .join(user_uuid)
+            .join(file_name);
+        match fs::remove_file(path).await {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
+/// 创建当前用户的新站点，并可同时绑定用户上传图标。
+pub async fn create_website_for_user(
+    pool: &DbPool,
+    user_uuid: &str,
+    payload: &CreateWebsitePayload,
+    icon: Option<&ValidatedWebsiteIcon>,
+) -> ApiResult<NavigationWebsite> {
+    ensure_group_owner(pool, user_uuid, &payload.group_uuid).await?;
+
+    let website_uuid = Uuid::new_v4().to_string();
+    let local_icon_path = match icon {
+        Some(icon) => Some(write_website_icon(user_uuid, &website_uuid, icon).await?),
+        None => None,
+    };
+    let icon_source = local_icon_path.as_ref().map(|_| "user_uploaded");
+    let url_lan = normalize_optional(payload.url_lan.as_ref());
+    let description = normalize_optional(payload.description.as_ref());
+    let background_color = normalize_optional(payload.background_color.as_ref());
+
+    let insert_result = sqlx::query(
+        r#"
+        INSERT INTO websites (
+            uuid, user_uuid, group_uuid, title, url, url_lan, default_icon,
+            local_icon_path, icon_source, description, background_color
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        "#,
+    )
+    .bind(&website_uuid)
+    .bind(user_uuid)
+    .bind(&payload.group_uuid)
+    .bind(payload.title.trim())
+    .bind(payload.url.trim())
+    .bind(&url_lan)
+    .bind(DEFAULT_WEBSITE_ICON)
+    .bind(&local_icon_path)
+    .bind(icon_source)
+    .bind(&description)
+    .bind(&background_color)
+    .execute(pool)
+    .await;
+
+    if let Err(error) = insert_result {
+        if let Some(file_name) = &local_icon_path {
+            let _ = fs::remove_file(
+                PathBuf::from(STORAGE_BASE_DIR)
+                    .join(user_uuid)
+                    .join(file_name),
+            )
+            .await;
+        }
+        return Err(error.into());
+    }
+
+    Ok(NavigationWebsite {
+        uuid: website_uuid,
+        group_uuid: payload.group_uuid.clone(),
+        title: payload.title.trim().to_string(),
+        url: payload.url.trim().to_string(),
+        url_lan,
+        default_icon: Some(DEFAULT_WEBSITE_ICON.to_string()),
+        local_icon_path,
+        background_color,
+        description,
+        sort_order: None,
+    })
+}
+
+/// 将可选文本统一裁剪，并把空字符串归一化为空值。
+fn normalize_optional(value: Option<&String>) -> Option<String> {
+    value
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
 /// 更新当前用户的站点配置。
 pub async fn update_website_for_user(
     pool: &DbPool,
     user_uuid: &str,
     website_uuid: &str,
     payload: &UpdateWebsitePayload,
+    icon: Option<&ValidatedWebsiteIcon>,
 ) -> ApiResult<()> {
     // 先验证站点属于当前用户，再继续后续更新，避免用 rows_affected
     // 同时承担“资源不存在”和“越权访问”两种语义判定。
-    let existing = sqlx::query_scalar::<_, String>(
+    let existing = sqlx::query_as::<_, (Option<String>, Option<String>, Option<String>)>(
         r#"
-        SELECT uuid
+        SELECT local_icon_path, default_icon, icon_source
         FROM websites
         WHERE uuid = ?1 AND user_uuid = ?2 AND is_deleted = 0
         LIMIT 1
@@ -107,55 +358,49 @@ pub async fn update_website_for_user(
     .fetch_optional(pool)
     .await?;
 
-    if existing.is_none() {
+    let Some((previous_icon_path, previous_default_icon, previous_icon_source)) = existing else {
         return Err(ApiError::ResourceNotFound);
+    };
+    ensure_group_owner(pool, user_uuid, &payload.group_uuid).await?;
+
+    if icon.is_some() && payload.icon_action == WebsiteIconAction::Reset {
+        return Err(ApiError::BadRequest(
+            "Cannot upload an icon and reset to the default icon at the same time".to_string(),
+        ));
     }
 
-    let target_group = sqlx::query_scalar::<_, String>(
-        r#"
-        SELECT uuid
-        FROM website_groups
-        WHERE uuid = ?1 AND user_uuid = ?2 AND is_deleted = 0
-        LIMIT 1
-        "#,
-    )
-    .bind(&payload.group_uuid)
-    .bind(user_uuid)
-    .fetch_optional(pool)
-    .await?;
-
-    if target_group.is_none() {
-        return Err(ApiError::ResourceNotFound);
-    }
-
-    // Web 编辑弹窗当前没有暴露图标/背景色字段，空字符串会在这里归一化为 None，
-    // 从而保持数据库里只存真实值，不保留无意义空串。
-    let url_lan = payload
-        .url_lan
-        .as_ref()
-        .map(|value| value.trim())
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned);
-    let default_icon = payload
+    // 表单中的可选文本在服务层统一归一化，数据库只保存真实值。
+    let url_lan = normalize_optional(payload.url_lan.as_ref());
+    let submitted_default_icon = payload
         .default_icon
         .as_ref()
         .map(|value| value.trim())
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned);
-    let description = payload
-        .description
-        .as_ref()
-        .map(|value| value.trim())
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned);
-    let background_color = payload
-        .background_color
-        .as_ref()
-        .map(|value| value.trim())
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned);
+    let description = normalize_optional(payload.description.as_ref());
+    let background_color = normalize_optional(payload.background_color.as_ref());
 
-    sqlx::query(
+    let new_icon_path = match icon {
+        Some(icon) => Some(write_website_icon(user_uuid, website_uuid, icon).await?),
+        None => None,
+    };
+    let (local_icon_path, default_icon, icon_source) = if let Some(path) = &new_icon_path {
+        (
+            Some(path.clone()),
+            submitted_default_icon.or_else(|| Some(DEFAULT_WEBSITE_ICON.to_string())),
+            Some("user_uploaded".to_string()),
+        )
+    } else if payload.icon_action == WebsiteIconAction::Reset {
+        (None, Some(DEFAULT_WEBSITE_ICON.to_string()), None)
+    } else {
+        (
+            previous_icon_path.clone(),
+            submitted_default_icon.or(previous_default_icon),
+            previous_icon_source,
+        )
+    };
+
+    let update_result = sqlx::query(
         r#"
         UPDATE websites
         SET group_uuid = ?1,
@@ -163,9 +408,11 @@ pub async fn update_website_for_user(
             url = ?3,
             url_lan = ?4,
             default_icon = ?5,
-            description = ?6,
-            background_color = ?7
-        WHERE uuid = ?8 AND user_uuid = ?9 AND is_deleted = 0
+            local_icon_path = ?6,
+            icon_source = ?7,
+            description = ?8,
+            background_color = ?9
+        WHERE uuid = ?10 AND user_uuid = ?11 AND is_deleted = 0
         "#,
     )
     .bind(&payload.group_uuid)
@@ -173,12 +420,39 @@ pub async fn update_website_for_user(
     .bind(payload.url.trim())
     .bind(url_lan)
     .bind(default_icon)
-    .bind(description)
-    .bind(background_color)
+    .bind(&local_icon_path)
+    .bind(&icon_source)
+    .bind(&description)
+    .bind(&background_color)
     .bind(website_uuid)
     .bind(user_uuid)
     .execute(pool)
-    .await?;
+    .await;
+
+    if let Err(error) = update_result {
+        if let Some(file_name) = &new_icon_path {
+            let _ = fs::remove_file(
+                PathBuf::from(STORAGE_BASE_DIR)
+                    .join(user_uuid)
+                    .join(file_name),
+            )
+            .await;
+        }
+        return Err(error.into());
+    }
+
+    if previous_icon_path != local_icon_path
+        && let Some(previous_file_name) = previous_icon_path
+        && let Err(error) = remove_icon_if_unreferenced(pool, user_uuid, &previous_file_name).await
+    {
+        tracing::warn!(
+            user_uuid,
+            website_uuid,
+            file_name = previous_file_name,
+            error = ?error,
+            "Website was updated, but the old icon could not be removed"
+        );
+    }
 
     Ok(())
 }
@@ -224,5 +498,288 @@ fn compare_sort_then_title(
         (Some(_), None) => Ordering::Less,
         (None, Some(_)) => Ordering::Greater,
         (None, None) => a_title.to_lowercase().cmp(&b_title.to_lowercase()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        WEBSITE_ICON_MAX_BYTES, create_website_for_user, update_website_for_user,
+        validate_website_icon,
+    };
+    use crate::config::STORAGE_BASE_DIR;
+    use crate::error::ApiError;
+    use crate::models::website::{
+        CreateWebsitePayload, DEFAULT_WEBSITE_ICON, UpdateWebsitePayload, WebsiteIconAction,
+    };
+    use sqlx::SqlitePool;
+    use std::path::PathBuf;
+    use tokio::fs;
+    use uuid::Uuid;
+
+    async fn create_test_pool() -> SqlitePool {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::query(
+            r#"
+            CREATE TABLE website_groups (
+                uuid TEXT PRIMARY KEY,
+                user_uuid TEXT NOT NULL,
+                is_deleted INTEGER NOT NULL DEFAULT 0
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"
+            CREATE TABLE websites (
+                uuid TEXT PRIMARY KEY,
+                user_uuid TEXT NOT NULL,
+                group_uuid TEXT NOT NULL,
+                title TEXT NOT NULL,
+                url TEXT NOT NULL,
+                url_lan TEXT,
+                default_icon TEXT,
+                local_icon_path TEXT,
+                icon_source TEXT,
+                description TEXT,
+                background_color TEXT,
+                sort_order INTEGER,
+                is_deleted INTEGER NOT NULL DEFAULT 0
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"
+            CREATE TABLE search_engines (
+                user_uuid TEXT NOT NULL,
+                local_icon_path TEXT,
+                is_deleted INTEGER NOT NULL DEFAULT 0
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool
+    }
+
+    fn create_payload(group_uuid: &str) -> CreateWebsitePayload {
+        CreateWebsitePayload {
+            title: "Navix".to_string(),
+            url: "https://example.com".to_string(),
+            url_lan: None,
+            group_uuid: group_uuid.to_string(),
+            description: None,
+            background_color: None,
+        }
+    }
+
+    fn update_payload(group_uuid: &str, icon_action: WebsiteIconAction) -> UpdateWebsitePayload {
+        UpdateWebsitePayload {
+            title: "Navix updated".to_string(),
+            url: "https://example.com/updated".to_string(),
+            url_lan: None,
+            group_uuid: group_uuid.to_string(),
+            default_icon: Some(DEFAULT_WEBSITE_ICON.to_string()),
+            description: None,
+            background_color: None,
+            icon_action,
+        }
+    }
+
+    async fn insert_site(pool: &SqlitePool, user_uuid: &str, group_uuid: &str, site_uuid: &str) {
+        sqlx::query("INSERT INTO website_groups (uuid, user_uuid) VALUES (?1, ?2)")
+            .bind(group_uuid)
+            .bind(user_uuid)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            r#"
+            INSERT INTO websites (
+                uuid, user_uuid, group_uuid, title, url, default_icon
+            ) VALUES (?1, ?2, ?3, 'Navix', 'https://example.com', ?4)
+            "#,
+        )
+        .bind(site_uuid)
+        .bind(user_uuid)
+        .bind(group_uuid)
+        .bind(DEFAULT_WEBSITE_ICON)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn create_site_uses_default_icon() {
+        let pool = create_test_pool().await;
+        sqlx::query("INSERT INTO website_groups (uuid, user_uuid) VALUES ('group-a', 'user-a')")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let created = create_website_for_user(&pool, "user-a", &create_payload("group-a"), None)
+            .await
+            .unwrap();
+
+        assert_eq!(created.default_icon.as_deref(), Some(DEFAULT_WEBSITE_ICON));
+        assert!(created.local_icon_path.is_none());
+        let stored_icon: Option<String> =
+            sqlx::query_scalar("SELECT default_icon FROM websites WHERE uuid = ?1")
+                .bind(&created.uuid)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(stored_icon.as_deref(), Some(DEFAULT_WEBSITE_ICON));
+    }
+
+    #[tokio::test]
+    async fn create_site_rejects_group_owned_by_another_user() {
+        let pool = create_test_pool().await;
+        sqlx::query("INSERT INTO website_groups (uuid, user_uuid) VALUES ('group-a', 'user-b')")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let error = create_website_for_user(&pool, "user-a", &create_payload("group-a"), None)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ApiError::ResourceNotFound));
+    }
+
+    #[tokio::test]
+    async fn update_site_replaces_and_resets_uploaded_icon() {
+        let pool = create_test_pool().await;
+        let user_uuid = Uuid::new_v4().to_string();
+        let group_uuid = Uuid::new_v4().to_string();
+        let site_uuid = Uuid::new_v4().to_string();
+        insert_site(&pool, &user_uuid, &group_uuid, &site_uuid).await;
+        let icon = validate_website_icon("icon.png", b"\x89PNG\r\n\x1a\nrest".to_vec()).unwrap();
+
+        update_website_for_user(
+            &pool,
+            &user_uuid,
+            &site_uuid,
+            &update_payload(&group_uuid, WebsiteIconAction::Keep),
+            Some(&icon),
+        )
+        .await
+        .unwrap();
+
+        let uploaded_name: Option<String> =
+            sqlx::query_scalar("SELECT local_icon_path FROM websites WHERE uuid = ?1")
+                .bind(&site_uuid)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let uploaded_name = uploaded_name.unwrap();
+        let uploaded_path = PathBuf::from(STORAGE_BASE_DIR)
+            .join(&user_uuid)
+            .join(&uploaded_name);
+        assert!(uploaded_path.exists());
+
+        update_website_for_user(
+            &pool,
+            &user_uuid,
+            &site_uuid,
+            &update_payload(&group_uuid, WebsiteIconAction::Reset),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let (local_icon_path, default_icon): (Option<String>, Option<String>) =
+            sqlx::query_as("SELECT local_icon_path, default_icon FROM websites WHERE uuid = ?1")
+                .bind(&site_uuid)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(local_icon_path.is_none());
+        assert_eq!(default_icon.as_deref(), Some(DEFAULT_WEBSITE_ICON));
+        assert!(!uploaded_path.exists());
+        let _ = fs::remove_dir(PathBuf::from(STORAGE_BASE_DIR).join(&user_uuid)).await;
+    }
+
+    #[tokio::test]
+    async fn update_failure_cleans_new_icon_file() {
+        let pool = create_test_pool().await;
+        let user_uuid = Uuid::new_v4().to_string();
+        let group_uuid = Uuid::new_v4().to_string();
+        let site_uuid = Uuid::new_v4().to_string();
+        insert_site(&pool, &user_uuid, &group_uuid, &site_uuid).await;
+        sqlx::query(
+            "CREATE TRIGGER fail_site_update BEFORE UPDATE ON websites BEGIN SELECT RAISE(FAIL, 'forced'); END",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let icon = validate_website_icon("icon.png", b"\x89PNG\r\n\x1a\nrest".to_vec()).unwrap();
+
+        let result = update_website_for_user(
+            &pool,
+            &user_uuid,
+            &site_uuid,
+            &update_payload(&group_uuid, WebsiteIconAction::Keep),
+            Some(&icon),
+        )
+        .await;
+        assert!(result.is_err());
+
+        let user_icon_dir = PathBuf::from(STORAGE_BASE_DIR).join(&user_uuid);
+        let remaining_files = match fs::read_dir(&user_icon_dir).await {
+            Ok(mut entries) => entries.next_entry().await.unwrap().is_some(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => panic!("Failed to read the test icon directory: {error}"),
+        };
+        assert!(!remaining_files);
+        let _ = fs::remove_dir(user_icon_dir).await;
+    }
+
+    #[test]
+    fn accepts_supported_image_signatures() {
+        let cases = [
+            ("icon.png", b"\x89PNG\r\n\x1a\nrest".as_slice()),
+            ("icon.jpg", &[0xff, 0xd8, 0xff, 0x00]),
+            ("icon.gif", b"GIF89arest".as_slice()),
+            ("icon.ico", &[0x00, 0x00, 0x01, 0x00, 0x01]),
+            ("icon.webp", b"RIFF0000WEBPrest".as_slice()),
+            (
+                "icon.svg",
+                br#"<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0"/></svg>"#.as_slice(),
+            ),
+        ];
+
+        for (file_name, bytes) in cases {
+            assert!(validate_website_icon(file_name, bytes.to_vec()).is_ok());
+        }
+    }
+
+    #[test]
+    fn rejects_oversized_or_mismatched_images() {
+        assert!(validate_website_icon("icon.png", vec![0; WEBSITE_ICON_MAX_BYTES + 1]).is_err());
+        assert!(validate_website_icon("icon.png", b"GIF89a".to_vec()).is_err());
+    }
+
+    #[test]
+    fn rejects_svg_scripts() {
+        for svg in [
+            br#"<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>"#
+                .as_slice(),
+            br#"<svg xmlns="http://www.w3.org/2000/svg"><a href="javascript:alert(1)"/></svg>"#
+                .as_slice(),
+        ] {
+            assert!(validate_website_icon("icon.svg", svg.to_vec()).is_err());
+        }
+    }
+
+    #[test]
+    fn accepts_svg_events_and_external_resources() {
+        let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" onload="ready()"><image href="https://example.com/icon.png"/></svg>"#;
+        assert!(validate_website_icon("icon.svg", svg.to_vec()).is_ok());
     }
 }

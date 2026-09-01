@@ -49,6 +49,14 @@ type SiteEditFormState = {
   default_icon: string;
   local_icon_path: string | null;
   description: string;
+  background_color: string;
+};
+
+type WebsiteIconAction = "keep" | "reset";
+
+type SiteIconCacheEntry = {
+  path: string;
+  objectUrl: string;
 };
 
 interface BuiltInSearchEngine {
@@ -59,6 +67,17 @@ interface BuiltInSearchEngine {
 }
 
 const SEARCH_ENGINE_STORAGE_KEY = "launchpadSearchEngine";
+const DEFAULT_WEBSITE_ICON = "ion:globe-outline";
+const WEBSITE_ICON_MAX_BYTES = 5 * 1024 * 1024;
+const WEBSITE_ICON_EXTENSIONS = [
+  "png",
+  "jpg",
+  "jpeg",
+  "webp",
+  "gif",
+  "ico",
+  "svg",
+] as const;
 
 const builtInSearchEngines: BuiltInSearchEngine[] = [
   {
@@ -113,10 +132,41 @@ function toEditForm(site: LaunchpadWebsite): SiteEditFormState {
     title: site.title,
     url: site.url,
     url_lan: site.url_lan ?? "",
-    default_icon: site.default_icon ?? "",
+    default_icon: site.default_icon ?? DEFAULT_WEBSITE_ICON,
     local_icon_path: site.local_icon_path ?? null,
     description: site.description ?? "",
+    background_color: site.background_color ?? "",
   };
+}
+
+/**
+ * 为指定分组构造新增站点表单，确保站点默认使用统一的地球图标。
+ */
+function toCreateForm(groupUuid: string): SiteEditFormState {
+  return {
+    uuid: "",
+    group_uuid: groupUuid,
+    title: "",
+    url: "",
+    url_lan: "",
+    default_icon: DEFAULT_WEBSITE_ICON,
+    local_icon_path: null,
+    description: "",
+    background_color: "",
+  };
+}
+
+/**
+ * 在提交前执行浏览器侧的图标文件基础校验，服务端仍会进行权威内容校验。
+ */
+function validateSelectedIcon(file: File): "size" | "format" | null {
+  if (file.size > WEBSITE_ICON_MAX_BYTES) return "size";
+  const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
+  return WEBSITE_ICON_EXTENSIONS.includes(
+    extension as (typeof WEBSITE_ICON_EXTENSIONS)[number],
+  )
+    ? null
+    : "format";
 }
 
 function isValidUrl(value: string): boolean {
@@ -149,22 +199,33 @@ const LaunchpadPage = () => {
     null,
   );
   const [editSite, setEditSite] = useState<SiteEditFormState | null>(null);
+  const [pendingIconFile, setPendingIconFile] = useState<File | null>(null);
+  const [pendingIconUrl, setPendingIconUrl] = useState<string | null>(null);
+  const [iconAction, setIconAction] = useState<WebsiteIconAction>("keep");
+  const [siteFormError, setSiteFormError] = useState<string | null>(null);
   const [activeGroupUuid, setActiveGroupUuid] = useState<string | null>(null);
   const [sidebarHovered, setSidebarHovered] = useState(false);
   const [userUuid, setUserUuid] = useState<string | null>(null);
-  const [iconErrors, setIconErrors] = useState<Record<string, boolean>>({});
-  const [iconUrls, setIconUrls] = useState<Record<string, string>>({});
+  const [iconErrors, setIconErrors] = useState<Record<string, string>>({});
+  const [iconUrls, setIconUrls] = useState<Record<string, SiteIconCacheEntry>>(
+    {},
+  );
   const [savingSite, setSavingSite] = useState(false);
   const [deletingSiteUuid, setDeletingSiteUuid] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [activeSearchEngineId, setActiveSearchEngineId] =
     useState<SearchEngineId>(getStoredSearchEngineId);
   const [searchEngineMenuOpen, setSearchEngineMenuOpen] = useState(false);
+  const siteFormOpen = editSite !== null;
 
-  const iconUrlsRef = useRef<Record<string, string>>({});
+  const iconUrlsRef = useRef<Record<string, SiteIconCacheEntry>>({});
   const groupRefs = useRef<Record<string, HTMLElement | null>>({});
   const searchEngineMenuRef = useRef<HTMLDivElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const siteTitleInputRef = useRef<HTMLInputElement | null>(null);
+  const siteModalRef = useRef<HTMLDivElement | null>(null);
+  const siteFormReturnFocusRef = useRef<HTMLElement | null>(null);
+  const iconFileInputRef = useRef<HTMLInputElement | null>(null);
   const sidebarTriggerRef = useRef<HTMLDivElement | null>(null);
   const sidebarRef = useRef<HTMLElement | null>(null);
   const navigate = useNavigate();
@@ -202,11 +263,11 @@ const LaunchpadPage = () => {
    * 站点本地图标依赖 userUuid 拼接下载地址，因此这里先拿 welcome，
    * 再加载 launchpad 列表，后续图标 effect 才能补齐本地图标展示。
    */
-  const loadLaunchpad = useCallback(async () => {
+  const loadLaunchpad = useCallback(async (): Promise<boolean> => {
     const token = getUserAccessToken();
     if (!token) {
       void navigate("/login");
-      return;
+      return false;
     }
 
     setLoading(true);
@@ -221,15 +282,46 @@ const LaunchpadPage = () => {
       const response = await apiFetch<LaunchpadGroup[]>("/api/v1/launchpad", {
         headers: { Authorization: `Bearer ${token}` },
       });
-      setLaunchpad(response.data || []);
+      const nextLaunchpad = response.data || [];
+      const currentIconPaths = new Map(
+        nextLaunchpad
+          .flatMap((group) => group.websites)
+          .filter(
+            (site): site is LaunchpadWebsite & { local_icon_path: string } =>
+              Boolean(site.local_icon_path),
+          )
+          .map((site) => [site.uuid, site.local_icon_path]),
+      );
+      setIconUrls((previous) => {
+        let next = previous;
+        for (const [siteUuid, entry] of Object.entries(previous)) {
+          if (currentIconPaths.get(siteUuid) === entry.path) continue;
+          if (next === previous) next = { ...previous };
+          URL.revokeObjectURL(entry.objectUrl);
+          delete next[siteUuid];
+        }
+        return next;
+      });
+      setIconErrors((previous) => {
+        let next = previous;
+        for (const [siteUuid, failedPath] of Object.entries(previous)) {
+          if (currentIconPaths.get(siteUuid) === failedPath) continue;
+          if (next === previous) next = { ...previous };
+          delete next[siteUuid];
+        }
+        return next;
+      });
+      setLaunchpad(nextLaunchpad);
+      return true;
     } catch (err) {
       if (isAuthError(err)) {
         clearUserAccessToken();
         void navigate("/login");
-        return;
+        return false;
       }
       log.error("运行期错误", err);
       setError(t("launchpad.fetchFailed"));
+      return false;
     } finally {
       setLoading(false);
     }
@@ -377,8 +469,8 @@ const LaunchpadPage = () => {
       .filter(
         (site) =>
           site.local_icon_path &&
-          !iconErrors[site.uuid] &&
-          !iconUrls[site.uuid],
+          iconErrors[site.uuid] !== site.local_icon_path &&
+          iconUrls[site.uuid]?.path !== site.local_icon_path,
       );
 
     const fetchIcons = async () => {
@@ -397,19 +489,40 @@ const LaunchpadPage = () => {
             }
             const blob = await response.blob();
             const objectUrl = URL.createObjectURL(blob);
+            if (controller.signal.aborted) {
+              URL.revokeObjectURL(objectUrl);
+              return;
+            }
             setIconUrls((prev) => {
-              if (prev[site.uuid]) {
+              const current = prev[site.uuid];
+              if (current?.path === site.local_icon_path) {
                 URL.revokeObjectURL(objectUrl);
                 return prev;
               }
-              return { ...prev, [site.uuid]: objectUrl };
+              if (current) URL.revokeObjectURL(current.objectUrl);
+              return {
+                ...prev,
+                [site.uuid]: {
+                  path: site.local_icon_path as string,
+                  objectUrl,
+                },
+              };
+            });
+            setIconErrors((prev) => {
+              if (!(site.uuid in prev)) return prev;
+              const next = { ...prev };
+              delete next[site.uuid];
+              return next;
             });
           } catch (err) {
             if (controller.signal.aborted) {
               return;
             }
             log.error("拉取站点图标失败", err);
-            setIconErrors((prev) => ({ ...prev, [site.uuid]: true }));
+            setIconErrors((prev) => ({
+              ...prev,
+              [site.uuid]: site.local_icon_path as string,
+            }));
           }
         }),
       );
@@ -426,8 +539,8 @@ const LaunchpadPage = () => {
 
   useEffect(() => {
     return () => {
-      Object.values(iconUrlsRef.current).forEach((url) =>
-        URL.revokeObjectURL(url),
+      Object.values(iconUrlsRef.current).forEach((entry) =>
+        URL.revokeObjectURL(entry.objectUrl),
       );
     };
   }, []);
@@ -556,6 +669,80 @@ const LaunchpadPage = () => {
     };
   }, [launchpadSidebarEnabled, filteredLaunchpad]);
 
+  useEffect(() => {
+    return () => {
+      if (pendingIconUrl) URL.revokeObjectURL(pendingIconUrl);
+    };
+  }, [pendingIconUrl]);
+
+  useEffect(() => {
+    if (!siteFormOpen) return;
+    const frame = window.requestAnimationFrame(() => {
+      siteTitleInputRef.current?.focus();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [siteFormOpen]);
+
+  /** 打开新增/编辑弹窗前统一重置临时图标和错误状态。 */
+  const prepareSiteForm = useCallback((site: SiteEditFormState) => {
+    setPendingIconFile(null);
+    setPendingIconUrl(null);
+    setIconAction("keep");
+    setSiteFormError(null);
+    if (iconFileInputRef.current) iconFileInputRef.current.value = "";
+    setEditSite(site);
+  }, []);
+
+  /** 关闭站点表单并把焦点还给打开弹窗的控件。 */
+  const closeSiteForm = useCallback(() => {
+    setEditSite(null);
+    setPendingIconFile(null);
+    setPendingIconUrl(null);
+    setIconAction("keep");
+    setSiteFormError(null);
+    window.requestAnimationFrame(() => siteFormReturnFocusRef.current?.focus());
+  }, []);
+
+  /** 选择本地图标并创建即时预览。 */
+  const handleIconSelection = (file: File | null) => {
+    if (!file) return;
+    const validationError = validateSelectedIcon(file);
+    if (validationError) {
+      setPendingIconFile(null);
+      setPendingIconUrl(null);
+      setSiteFormError(
+        validationError === "size"
+          ? t("launchpad.iconTooLarge")
+          : t("launchpad.iconInvalidFormat"),
+      );
+      if (iconFileInputRef.current) iconFileInputRef.current.value = "";
+      return;
+    }
+
+    setPendingIconFile(file);
+    setPendingIconUrl(URL.createObjectURL(file));
+    setIconAction("keep");
+    setSiteFormError(null);
+  };
+
+  /** 清除已选或已有本地图标，保存后恢复默认地球图标。 */
+  const handleResetSiteIcon = () => {
+    setPendingIconFile(null);
+    setPendingIconUrl(null);
+    setIconAction("reset");
+    setSiteFormError(null);
+    if (iconFileInputRef.current) iconFileInputRef.current.value = "";
+    setEditSite((current) =>
+      current
+        ? {
+            ...current,
+            default_icon: DEFAULT_WEBSITE_ICON,
+            local_icon_path: null,
+          }
+        : current,
+    );
+  };
+
   const getSiteUrlForMode = (site: LaunchpadWebsite) =>
     mode === "lan" && site.url_lan ? site.url_lan : site.url;
 
@@ -620,7 +807,7 @@ const LaunchpadPage = () => {
       });
       setContextMenu(null);
       if (editSite?.uuid === site.uuid) {
-        setEditSite(null);
+        closeSiteForm();
       }
       await loadLaunchpad();
     } catch (err) {
@@ -637,10 +824,7 @@ const LaunchpadPage = () => {
   };
 
   /**
-   * 提交当前编辑中的站点。
-   *
-   * 这条链路只暴露本期规划的基础字段，但请求体会继续带上已有的 default_icon，
-   * 避免现有图标资产在本期 UI 收敛后被覆盖掉。
+   * 提交当前新增或编辑中的站点，并把可选图标与表单放在同一次 multipart 请求中。
    */
   const handleSaveSite = async () => {
     if (!editSite) {
@@ -648,23 +832,23 @@ const LaunchpadPage = () => {
     }
 
     if (!editSite.title.trim()) {
-      window.alert(t("launchpad.titleRequired"));
+      setSiteFormError(t("launchpad.titleRequired"));
       return;
     }
     if (!editSite.url.trim()) {
-      window.alert(t("launchpad.urlRequired"));
+      setSiteFormError(t("launchpad.urlRequired"));
       return;
     }
     if (!isValidUrl(editSite.url.trim())) {
-      window.alert(t("launchpad.invalidUrl"));
+      setSiteFormError(t("launchpad.invalidUrl"));
       return;
     }
     if (editSite.url_lan.trim() && !isValidUrl(editSite.url_lan.trim())) {
-      window.alert(t("launchpad.invalidLanUrl"));
+      setSiteFormError(t("launchpad.invalidLanUrl"));
       return;
     }
     if (!editSite.group_uuid) {
-      window.alert(t("launchpad.groupRequired"));
+      setSiteFormError(t("launchpad.groupRequired"));
       return;
     }
 
@@ -675,25 +859,40 @@ const LaunchpadPage = () => {
     }
 
     setSavingSite(true);
+    setSiteFormError(null);
     try {
-      await apiFetch(`/api/v1/launchpad/items/${editSite.uuid}`, {
-        method: "PUT",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
+      const isCreating = !editSite.uuid;
+      const payload = {
+        title: editSite.title.trim(),
+        url: editSite.url.trim(),
+        url_lan: editSite.url_lan.trim() || null,
+        group_uuid: editSite.group_uuid,
+        description: editSite.description.trim() || null,
+        background_color: editSite.background_color || null,
+        ...(isCreating
+          ? {}
+          : {
+              default_icon: editSite.default_icon,
+              icon_action: iconAction,
+            }),
+      };
+      const body = new FormData();
+      body.append("payload", JSON.stringify(payload));
+      if (pendingIconFile) body.append("icon", pendingIconFile);
+
+      await apiFetch<LaunchpadWebsite>(
+        isCreating
+          ? "/api/v1/launchpad/items"
+          : `/api/v1/launchpad/items/${editSite.uuid}`,
+        {
+          method: isCreating ? "POST" : "PUT",
+          headers: { Authorization: `Bearer ${token}` },
+          body,
         },
-        body: JSON.stringify({
-          title: editSite.title,
-          url: editSite.url,
-          url_lan: editSite.url_lan,
-          group_uuid: editSite.group_uuid,
-          default_icon: editSite.default_icon,
-          description: editSite.description,
-        }),
-      });
-      setEditSite(null);
-      setContextMenu(null);
+      );
       await loadLaunchpad();
+      closeSiteForm();
+      setContextMenu(null);
     } catch (err) {
       if (isAuthError(err)) {
         clearUserAccessToken();
@@ -701,9 +900,38 @@ const LaunchpadPage = () => {
         return;
       }
       log.error("运行期错误", err);
-      window.alert(t("launchpad.saveFailed"));
+      setSiteFormError(
+        editSite.uuid ? t("launchpad.saveFailed") : t("launchpad.createFailed"),
+      );
     } finally {
       setSavingSite(false);
+    }
+  };
+
+  /** 捕获弹窗内 Escape，并把 Tab 焦点约束在当前对话框中。 */
+  const handleSiteFormKeyDown = (event: React.KeyboardEvent) => {
+    if (event.key === "Escape" && !savingSite) {
+      event.preventDefault();
+      closeSiteForm();
+      return;
+    }
+    if (event.key !== "Tab" || !siteModalRef.current) return;
+
+    const focusable = Array.from(
+      siteModalRef.current.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), input:not([disabled]):not([tabindex="-1"]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      ),
+    ).filter((element) => element.offsetParent !== null);
+    if (focusable.length === 0) return;
+
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
     }
   };
 
@@ -960,7 +1188,37 @@ const LaunchpadPage = () => {
                       className={`launchpad-group-header ${styles.groupHeader}`}
                       data-slot="launchpad-group-header"
                     >
-                      <p className={styles.groupName}>{group.name}</p>
+                      <div className={styles.groupTitleRow}>
+                        <p className={styles.groupName}>{group.name}</p>
+                        <button
+                          type="button"
+                          className={styles.groupAddButton}
+                          data-ui="launchpad-add-site"
+                          data-group-uuid={group.uuid}
+                          aria-label={t("launchpad.addToGroup", {
+                            group: group.name,
+                          })}
+                          title={t("launchpad.addSite")}
+                          onClick={(event) => {
+                            siteFormReturnFocusRef.current =
+                              event.currentTarget;
+                            prepareSiteForm(toCreateForm(group.uuid));
+                          }}
+                        >
+                          <svg
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            aria-hidden="true"
+                          >
+                            <path
+                              d="M12 5v14M5 12h14"
+                              stroke="currentColor"
+                              strokeWidth="1.8"
+                              strokeLinecap="round"
+                            />
+                          </svg>
+                        </button>
+                      </div>
                       <span className={styles.groupBadge}>
                         {t("launchpad.sitesCount", {
                           count: group.websites.length,
@@ -988,9 +1246,10 @@ const LaunchpadPage = () => {
                               defaultIcon={site.default_icon}
                               localIconUrl={
                                 site.local_icon_path &&
-                                iconUrls[site.uuid] &&
-                                !iconErrors[site.uuid]
-                                  ? iconUrls[site.uuid]
+                                iconUrls[site.uuid]?.path ===
+                                  site.local_icon_path &&
+                                iconErrors[site.uuid] !== site.local_icon_path
+                                  ? iconUrls[site.uuid].objectUrl
                                   : null
                               }
                               fallback={
@@ -1033,8 +1292,9 @@ const LaunchpadPage = () => {
             type="button"
             className={styles.contextMenuButton}
             data-ui="launchpad-context-edit"
-            onClick={() => {
-              setEditSite(toEditForm(contextMenu.site));
+            onClick={(event) => {
+              siteFormReturnFocusRef.current = event.currentTarget;
+              prepareSiteForm(toEditForm(contextMenu.site));
               setContextMenu(null);
             }}
           >
@@ -1060,33 +1320,44 @@ const LaunchpadPage = () => {
           data-ui="launchpad-site-modal-overlay"
           onClick={() => {
             if (!savingSite) {
-              setEditSite(null);
+              closeSiteForm();
             }
           }}
         >
           <div
+            ref={siteModalRef}
             className={`launchpad-site-modal ${styles.modalCard}`}
             data-ui="launchpad-site-editor"
             data-entity="launchpad-site"
-            data-site-uuid={editSite.uuid}
+            data-mode={editSite.uuid ? "edit" : "create"}
+            data-site-uuid={editSite.uuid || undefined}
             onClick={(e) => e.stopPropagation()}
+            onKeyDown={handleSiteFormKeyDown}
             role="dialog"
             aria-modal="true"
-            aria-label={t("launchpad.editTitle")}
+            aria-label={
+              editSite.uuid
+                ? t("launchpad.editTitle")
+                : t("launchpad.createTitle")
+            }
           >
             <header className={styles.modalHeader}>
               <div className={styles.modalIdentity}>
                 <div className={styles.iconBubble}>
                   <DynamicIcon
-                    alt={editSite.title}
+                    alt={editSite.title || t("launchpad.newSite")}
                     className={iconStyles.icon}
                     defaultIcon={editSite.default_icon}
                     localIconUrl={
+                      pendingIconUrl ??
+                      (editSite.uuid &&
+                      iconAction === "keep" &&
                       editSite.local_icon_path &&
-                      iconUrls[editSite.uuid] &&
-                      !iconErrors[editSite.uuid]
-                        ? iconUrls[editSite.uuid]
-                        : null
+                      iconUrls[editSite.uuid]?.path ===
+                        editSite.local_icon_path &&
+                      iconErrors[editSite.uuid] !== editSite.local_icon_path
+                        ? iconUrls[editSite.uuid].objectUrl
+                        : null)
                     }
                     fallback={
                       <DefaultIcon
@@ -1097,14 +1368,20 @@ const LaunchpadPage = () => {
                   />
                 </div>
                 <div className={styles.modalIdentityText}>
-                  <p className={styles.modalEyebrow}>{t("launchpad.edit")}</p>
-                  <p className={styles.siteTitle}>{editSite.title}</p>
+                  <p className={styles.modalEyebrow}>
+                    {editSite.uuid
+                      ? t("launchpad.edit")
+                      : t("launchpad.addSite")}
+                  </p>
+                  <p className={styles.siteTitle}>
+                    {editSite.title || t("launchpad.newSite")}
+                  </p>
                 </div>
               </div>
               <button
                 type="button"
                 className={styles.modalCloseButton}
-                onClick={() => setEditSite(null)}
+                onClick={closeSiteForm}
                 aria-label={t("common.close")}
                 disabled={savingSite}
               >
@@ -1118,104 +1395,215 @@ const LaunchpadPage = () => {
                 </svg>
               </button>
             </header>
-            <div className={styles.modalBody}>
-              <div className={styles.modalSectionGrid}>
+            <form
+              data-ui="launchpad-site-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void handleSaveSite();
+              }}
+            >
+              <div className={styles.modalBody}>
+                <div className={styles.modalSectionGrid}>
+                  <label className={styles.formField}>
+                    <span className={styles.modalLabel}>
+                      {t("launchpad.group")}
+                    </span>
+                    <SelectField
+                      value={editSite.group_uuid}
+                      dataUi="launchpad-group-select"
+                      options={groupOptions.map((group) => ({
+                        value: group.uuid,
+                        label: group.name,
+                      }))}
+                      onChange={(value) =>
+                        setEditSite((prev) =>
+                          prev ? { ...prev, group_uuid: value } : prev,
+                        )
+                      }
+                    />
+                  </label>
+                  <label className={styles.formField}>
+                    <span className={styles.modalLabel}>
+                      {t("launchpad.siteTitle")}
+                    </span>
+                    <input
+                      ref={siteTitleInputRef}
+                      className={styles.formControl}
+                      data-ui="launchpad-site-title-input"
+                      value={editSite.title}
+                      onChange={(event) =>
+                        setEditSite((prev) =>
+                          prev ? { ...prev, title: event.target.value } : prev,
+                        )
+                      }
+                    />
+                  </label>
+                </div>
                 <label className={styles.formField}>
                   <span className={styles.modalLabel}>
-                    {t("launchpad.group")}
-                  </span>
-                  <SelectField
-                    value={editSite.group_uuid}
-                    dataUi="launchpad-group-select"
-                    options={groupOptions.map((group) => ({
-                      value: group.uuid,
-                      label: group.name,
-                    }))}
-                    onChange={(value) =>
-                      setEditSite((prev) =>
-                        prev ? { ...prev, group_uuid: value } : prev,
-                      )
-                    }
-                  />
-                </label>
-                <label className={styles.formField}>
-                  <span className={styles.modalLabel}>
-                    {t("launchpad.siteTitle")}
+                    {t("launchpad.editTarget")}
                   </span>
                   <input
                     className={styles.formControl}
-                    value={editSite.title}
+                    data-ui="launchpad-site-url-input"
+                    value={editSite.url}
+                    placeholder="https://example.com"
                     onChange={(event) =>
                       setEditSite((prev) =>
-                        prev ? { ...prev, title: event.target.value } : prev,
+                        prev ? { ...prev, url: event.target.value } : prev,
                       )
                     }
                   />
                 </label>
+                <label className={styles.formField}>
+                  <span className={styles.modalLabel}>
+                    {t("launchpad.editLanTarget")}
+                  </span>
+                  <input
+                    className={styles.formControl}
+                    data-ui="launchpad-site-lan-url-input"
+                    value={editSite.url_lan}
+                    placeholder="http://192.168.1.100"
+                    onChange={(event) =>
+                      setEditSite((prev) =>
+                        prev ? { ...prev, url_lan: event.target.value } : prev,
+                      )
+                    }
+                  />
+                </label>
+                <label className={styles.formField}>
+                  <span className={styles.modalLabel}>
+                    {t("launchpad.description")}
+                  </span>
+                  <textarea
+                    className={`${styles.formControl} ${styles.formTextarea}`}
+                    data-ui="launchpad-site-description-input"
+                    value={editSite.description}
+                    onChange={(event) =>
+                      setEditSite((prev) =>
+                        prev
+                          ? { ...prev, description: event.target.value }
+                          : prev,
+                      )
+                    }
+                  />
+                </label>
+
+                <div
+                  className={styles.iconUploadField}
+                  data-ui="launchpad-site-icon-upload"
+                >
+                  <div className={styles.iconUploadCopy}>
+                    <span className={styles.modalLabel}>
+                      {t("launchpad.siteIcon")}
+                    </span>
+                    <p className={styles.iconUploadHint}>
+                      {t("launchpad.iconUploadHint")}
+                    </p>
+                    {pendingIconFile ? (
+                      <p
+                        className={styles.iconFileName}
+                        data-ui="launchpad-site-icon-file-name"
+                      >
+                        {pendingIconFile.name}
+                      </p>
+                    ) : null}
+                  </div>
+                  <div className={styles.iconUploadActions}>
+                    <input
+                      ref={iconFileInputRef}
+                      className={styles.visuallyHiddenInput}
+                      data-ui="launchpad-site-icon-input"
+                      id="launchpad-site-icon-input"
+                      type="file"
+                      tabIndex={-1}
+                      accept=".png,.jpg,.jpeg,.webp,.gif,.ico,.svg,image/png,image/jpeg,image/webp,image/gif,image/x-icon,image/svg+xml"
+                      onChange={(event) =>
+                        handleIconSelection(event.target.files?.[0] ?? null)
+                      }
+                      disabled={savingSite}
+                    />
+                    <button
+                      type="button"
+                      className={styles.iconActionButton}
+                      data-ui="launchpad-site-icon-select"
+                      onClick={() => iconFileInputRef.current?.click()}
+                      disabled={savingSite}
+                      aria-label={t("launchpad.uploadIcon")}
+                      title={t("launchpad.uploadIcon")}
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <path
+                          d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 15.5v2.25A2.25 2.25 0 0 0 7.25 20h9.5A2.25 2.25 0 0 0 19 17.75V15.5"
+                          stroke="currentColor"
+                          strokeWidth="1.8"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                    </button>
+                    <button
+                      type="button"
+                      className={styles.iconActionButton}
+                      data-ui="launchpad-site-icon-reset"
+                      onClick={handleResetSiteIcon}
+                      disabled={savingSite}
+                      aria-label={t("launchpad.useDefaultIcon")}
+                      title={t("launchpad.useDefaultIcon")}
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <circle
+                          cx="12"
+                          cy="12"
+                          r="8.5"
+                          stroke="currentColor"
+                          strokeWidth="1.7"
+                        />
+                        <path
+                          d="M3.8 12h16.4M12 3.5c2.1 2.3 3.2 5.1 3.2 8.5S14.1 18.2 12 20.5C9.9 18.2 8.8 15.4 8.8 12S9.9 5.8 12 3.5Z"
+                          stroke="currentColor"
+                          strokeWidth="1.7"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+
+                {siteFormError ? (
+                  <p
+                    className={styles.formError}
+                    data-ui="launchpad-site-form-error"
+                    role="alert"
+                  >
+                    {siteFormError}
+                  </p>
+                ) : null}
               </div>
-              <label className={styles.formField}>
-                <span className={styles.modalLabel}>
-                  {t("launchpad.editTarget")}
-                </span>
-                <input
-                  className={styles.formControl}
-                  value={editSite.url}
-                  placeholder="https://example.com"
-                  onChange={(event) =>
-                    setEditSite((prev) =>
-                      prev ? { ...prev, url: event.target.value } : prev,
-                    )
-                  }
-                />
-              </label>
-              <label className={styles.formField}>
-                <span className={styles.modalLabel}>
-                  {t("launchpad.editLanTarget")}
-                </span>
-                <input
-                  className={styles.formControl}
-                  value={editSite.url_lan}
-                  placeholder="http://192.168.1.100"
-                  onChange={(event) =>
-                    setEditSite((prev) =>
-                      prev ? { ...prev, url_lan: event.target.value } : prev,
-                    )
-                  }
-                />
-              </label>
-              <label className={styles.formField}>
-                <span className={styles.modalLabel}>
-                  {t("launchpad.description")}
-                </span>
-                <textarea
-                  className={`${styles.formControl} ${styles.formTextarea}`}
-                  value={editSite.description}
-                  onChange={(event) =>
-                    setEditSite((prev) =>
-                      prev
-                        ? { ...prev, description: event.target.value }
-                        : prev,
-                    )
-                  }
-                />
-              </label>
-            </div>
-            <div className={styles.modalActions}>
-              <button
-                className={styles.ghostButton}
-                onClick={() => setEditSite(null)}
-                disabled={savingSite}
-              >
-                {t("common.cancel")}
-              </button>
-              <button
-                className={styles.primaryButton}
-                onClick={() => void handleSaveSite()}
-                disabled={savingSite}
-              >
-                {savingSite ? t("launchpad.saving") : t("launchpad.save")}
-              </button>
-            </div>
+              <div className={styles.modalActions}>
+                <button
+                  type="button"
+                  className={styles.ghostButton}
+                  onClick={closeSiteForm}
+                  disabled={savingSite}
+                >
+                  {t("common.cancel")}
+                </button>
+                <button
+                  type="submit"
+                  className={styles.primaryButton}
+                  data-ui="launchpad-site-submit"
+                  disabled={savingSite}
+                >
+                  {savingSite
+                    ? t("launchpad.saving")
+                    : editSite.uuid
+                      ? t("launchpad.save")
+                      : t("launchpad.create")}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}
