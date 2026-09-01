@@ -6,20 +6,29 @@ import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
 
 const ChangelogContainer = styled.div`
+  display: flex;
+  flex-direction: column;
   width: 100%;
   height: 100%;
-  padding: 2rem;
   box-sizing: border-box;
-  overflow-y: auto;
+  overflow: hidden;
   color: ${(props) => props.theme.colors.textPrimary};
   background-color: ${(props) => props.theme.colors.background};
 `;
 
 const Title = styled.h1`
+  flex-shrink: 0;
   color: ${(props) => props.theme.colors.primary};
   border-bottom: 2px solid ${(props) => props.theme.colors.border};
   padding-bottom: 0.5rem;
-  margin-bottom: 1.5rem;
+  margin: 2rem 2rem 0;
+`;
+
+const ChangelogScrollArea = styled.div`
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 1.5rem 2rem 2rem;
 `;
 
 const MarkdownContent = styled.div`
@@ -129,16 +138,17 @@ function filterUnreleasedSection(markdown: string): string {
 
   const nextVersionHeadingOffset = lines
     .slice(unreleasedHeadingIndex + 1)
-    .findIndex((line) => /^##(?:[\t ]+|$)/.test(line));
+    .findIndex((line) =>
+      /^##[\t ]+\[(?!unreleased\])[^\]]+\](?:\([^)]*\))?(?:[\t ]+-[\t ].*)?[\t ]*$/i.test(
+        line,
+      ),
+    );
   const nextVersionHeadingIndex =
     nextVersionHeadingOffset === -1
       ? lines.length
       : unreleasedHeadingIndex + nextVersionHeadingOffset + 1;
 
-  return [
-    ...lines.slice(0, unreleasedHeadingIndex),
-    ...lines.slice(nextVersionHeadingIndex),
-  ].join("\n");
+  return lines.slice(nextVersionHeadingIndex).join("\n");
 }
 
 const ChangelogPage: React.FC = () => {
@@ -149,13 +159,15 @@ const ChangelogPage: React.FC = () => {
   );
 
   return (
-    <ChangelogContainer>
-      <Title>{t("menu.help.changelog")}</Title>
-      <MarkdownContent>
-        <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-          {changelogContent}
-        </Markdown>
-      </MarkdownContent>
+    <ChangelogContainer data-page="changelog">
+      <Title data-ui="changelog-title">{t("menu.help.changelog")}</Title>
+      <ChangelogScrollArea data-slot="changelog-scroll-area">
+        <MarkdownContent>
+          <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+            {changelogContent}
+          </Markdown>
+        </MarkdownContent>
+      </ChangelogScrollArea>
     </ChangelogContainer>
   );
 };
