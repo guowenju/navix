@@ -18,17 +18,31 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { useNavigate, useOutletContext } from "react-router-dom";
 import { SelectField } from "@navix/shared-ui";
-import { apiFetch, apiFetchResponse, isAuthError } from "../api";
+import {
+  ApiRequestError,
+  apiFetch,
+  apiFetchResponse,
+  isAuthError,
+} from "../api";
 import { clearUserAccessToken, getUserAccessToken } from "../auth/tokenStore";
+import Banner from "../components/Banner";
 import DynamicIcon from "../components/DynamicIcon";
 import { useI18n } from "../i18n/useI18n";
 import type { AppShellOutletContext } from "../layouts/AppShell";
 import { log } from "../utils/logger";
 import iconStyles from "../components/DynamicIcon.module.css";
 import styles from "./Launchpad.module.css";
-import type { Claims } from "@navix/shared-ts";
+import { APP_ERROR_CODES, type Claims } from "@navix/shared-ts";
+import {
+  IoChevronDownOutline,
+  IoChevronForwardOutline,
+  IoCloseOutline,
+  IoLockClosedOutline,
+  IoLockOpenOutline,
+} from "react-icons/io5";
 
 type SearchEngineId = "bing" | "google";
+const LOCK_PASSWORD_CLEARED_EVENT = "navix:launchpad-lock-password-cleared";
 
 interface LaunchpadWebsite {
   uuid: string;
@@ -49,6 +63,13 @@ interface LaunchpadGroup {
   description?: string | null;
   sort_order?: number | null;
   websites: LaunchpadWebsite[];
+  is_locked: boolean;
+  password_required: boolean;
+}
+
+interface LaunchpadUnlockResponse {
+  group: LaunchpadGroup;
+  icon_access_token: string;
 }
 
 type SiteContextMenuState = {
@@ -74,6 +95,11 @@ type WebsiteIconAction = "keep" | "reset";
 type SiteIconCacheEntry = {
   path: string;
   objectUrl: string;
+};
+
+type LockDialogState = {
+  mode: "unlock" | "setup";
+  group: LaunchpadGroup;
 };
 
 interface BuiltInSearchEngine {
@@ -291,6 +317,74 @@ function getStoredSearchEngineId(): SearchEngineId {
   return storedValue === "google" ? "google" : "bing";
 }
 
+function readCollapsedGroups(value: string | null): Record<string, boolean> {
+  if (!value) return {};
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+      return {};
+    return Object.fromEntries(
+      Object.entries(parsed).filter(
+        ([, collapsed]) => typeof collapsed === "boolean",
+      ),
+    );
+  } catch {
+    return {};
+  }
+}
+
+type CollapsedGroupsUpdater = (
+  value:
+    | Record<string, boolean>
+    | ((current: Record<string, boolean>) => Record<string, boolean>),
+) => void;
+
+/** 按当前用户存储键同步恢复并持久化折叠状态，避免 StrictMode 重复 effect 覆盖数据。 */
+function usePersistedCollapsedGroups(
+  storageKey: string,
+): [Record<string, boolean>, CollapsedGroupsUpdater] {
+  const [state, setState] = useState(() => ({
+    storageKey,
+    groups: readCollapsedGroups(window.localStorage.getItem(storageKey)),
+  }));
+  const groups = state.storageKey === storageKey ? state.groups : {};
+  const setGroups = useCallback<CollapsedGroupsUpdater>(
+    (value) => {
+      setState((current) => {
+        const currentGroups =
+          current.storageKey === storageKey
+            ? current.groups
+            : readCollapsedGroups(window.localStorage.getItem(storageKey));
+        return {
+          storageKey,
+          groups: typeof value === "function" ? value(currentGroups) : value,
+        };
+      });
+    },
+    [storageKey],
+  );
+
+  useEffect(() => {
+    const groups = readCollapsedGroups(window.localStorage.getItem(storageKey));
+    queueMicrotask(() => {
+      setState((current) =>
+        current.storageKey === storageKey ? current : { storageKey, groups },
+      );
+    });
+  }, [storageKey]);
+
+  useEffect(() => {
+    if (state.storageKey !== storageKey) return;
+    try {
+      window.localStorage.setItem(storageKey, JSON.stringify(state.groups));
+    } catch {
+      // 浏览器禁用本地存储时仍保留当前会话内的状态。
+    }
+  }, [state, storageKey]);
+
+  return [groups, setGroups];
+}
+
 /**
  * 渲染启动台主页面，提供搜索、分组导航、站点管理和显示模式切换。
  */
@@ -310,6 +404,7 @@ const LaunchpadPage = () => {
   const [activeGroupUuid, setActiveGroupUuid] = useState<string | null>(null);
   const [sidebarHovered, setSidebarHovered] = useState(false);
   const [userUuid, setUserUuid] = useState<string | null>(null);
+  const collapsedGroupsStorageKey = `navix.launchpad.collapsedGroups:${userUuid ?? "anonymous"}`;
   const [iconErrors, setIconErrors] = useState<Record<string, string>>({});
   const [iconUrls, setIconUrls] = useState<Record<string, SiteIconCacheEntry>>(
     {},
@@ -317,6 +412,23 @@ const LaunchpadPage = () => {
   const [savingSite, setSavingSite] = useState(false);
   const [deletingSiteUuid, setDeletingSiteUuid] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
+  const [collapsedGroups, setCollapsedGroups] = usePersistedCollapsedGroups(
+    collapsedGroupsStorageKey,
+  );
+  const [unlockedGroups, setUnlockedGroups] = useState<Record<string, boolean>>(
+    {},
+  );
+  const [unlockedGroupIconTokens, setUnlockedGroupIconTokens] = useState<
+    Record<string, string>
+  >({});
+  const [unlockingGroupUuid, setUnlockingGroupUuid] = useState<string | null>(
+    null,
+  );
+  const [lockDialog, setLockDialog] = useState<LockDialogState | null>(null);
+  const [lockDialogPassword, setLockDialogPassword] = useState("");
+  const [lockDialogError, setLockDialogError] = useState<string | null>(null);
+  const [lockPasswordBannerGroup, setLockPasswordBannerGroup] =
+    useState<LaunchpadGroup | null>(null);
   const [sortingGroupUuid, setSortingGroupUuid] = useState<string | null>(null);
   const [savingOrderGroupUuid, setSavingOrderGroupUuid] = useState<
     string | null
@@ -405,6 +517,8 @@ const LaunchpadPage = () => {
         headers: { Authorization: `Bearer ${token}` },
       });
       const nextLaunchpad = response.data || [];
+      setUnlockedGroups({});
+      setUnlockedGroupIconTokens({});
       const currentIconPaths = new Map(
         nextLaunchpad
           .flatMap((group) => group.websites)
@@ -455,13 +569,407 @@ const LaunchpadPage = () => {
     })();
   }, [loadLaunchpad]);
 
+  useEffect(() => {
+    const handleLockPasswordCleared = () => {
+      setLockPasswordBannerGroup(null);
+      setUnlockedGroupIconTokens({});
+      void loadLaunchpad();
+    };
+    window.addEventListener(
+      LOCK_PASSWORD_CLEARED_EVENT,
+      handleLockPasswordCleared,
+    );
+    return () => {
+      window.removeEventListener(
+        LOCK_PASSWORD_CLEARED_EVENT,
+        handleLockPasswordCleared,
+      );
+    };
+  }, [loadLaunchpad]);
+
+  const replaceGroup = useCallback((nextGroup: LaunchpadGroup) => {
+    setLaunchpad((current) =>
+      current.map((group) =>
+        group.uuid === nextGroup.uuid ? nextGroup : group,
+      ),
+    );
+  }, []);
+
+  /** 移除已失效的站点图标缓存，并立即释放对应 Object URL。 */
+  const discardSiteIconCache = useCallback(
+    (siteUuid: string, nextPath: string | null = null) => {
+      setIconUrls((current) => {
+        const entry = current[siteUuid];
+        if (!entry || entry.path === nextPath) return current;
+        URL.revokeObjectURL(entry.objectUrl);
+        const next = { ...current };
+        delete next[siteUuid];
+        return next;
+      });
+      setIconErrors((current) => {
+        if (!(siteUuid in current)) return current;
+        const next = { ...current };
+        delete next[siteUuid];
+        return next;
+      });
+    },
+    [],
+  );
+
+  /** 将新增或更新后的站点合并到当前页面，避免全量刷新清空会话解锁状态。 */
+  const mergeSavedSite = useCallback(
+    (site: LaunchpadWebsite) => {
+      setLaunchpad((current) =>
+        current.map((group) => {
+          const websites = group.websites.filter(
+            (currentSite) => currentSite.uuid !== site.uuid,
+          );
+          if (group.uuid !== site.group_uuid) {
+            return websites.length === group.websites.length
+              ? group
+              : { ...group, websites };
+          }
+          if (group.is_locked && !unlockedGroups[group.uuid]) {
+            return { ...group, websites };
+          }
+          return { ...group, websites: [...websites, site] };
+        }),
+      );
+    },
+    [unlockedGroups],
+  );
+
+  /** 获取当前用户最新的分组锁密码配置，避免控制中心修改后页面状态过期。 */
+  const getLockPasswordStatus = useCallback(async (token: string) => {
+    const response = await apiFetch<{
+      configured: boolean;
+      password_required: boolean;
+    }>("/api/v1/launchpad/lock-password/status", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    return {
+      configured: Boolean(response.data?.configured),
+      passwordRequired: Boolean(response.data?.password_required),
+    };
+  }, []);
+
+  const unlockGroupWithPassword = useCallback(
+    async (group: LaunchpadGroup, password: string) => {
+      if (unlockingGroupUuid) return;
+      const token = getUserAccessToken();
+      if (!token) {
+        void navigate("/login");
+        return;
+      }
+      setUnlockingGroupUuid(group.uuid);
+      try {
+        const response = await apiFetch<LaunchpadUnlockResponse>(
+          `/api/v1/launchpad/groups/${encodeURIComponent(group.uuid)}/unlock`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({ password }),
+          },
+        );
+        const unlocked = response.data;
+        if (unlocked) {
+          replaceGroup(unlocked.group);
+          setUnlockedGroups((current) => ({ ...current, [group.uuid]: true }));
+          setUnlockedGroupIconTokens((current) => ({
+            ...current,
+            [group.uuid]: unlocked.icon_access_token,
+          }));
+          setCollapsedGroups((current) => ({
+            ...current,
+            [group.uuid]: false,
+          }));
+        }
+      } finally {
+        setUnlockingGroupUuid(null);
+      }
+    },
+    [navigate, replaceGroup, setCollapsedGroups, unlockingGroupUuid],
+  );
+
+  const handleUnlockGroup = useCallback(
+    async (group: LaunchpadGroup) => {
+      const token = getUserAccessToken();
+      if (!token) {
+        void navigate("/login");
+        return;
+      }
+      try {
+        const status = await getLockPasswordStatus(token);
+        const currentGroup = {
+          ...group,
+          password_required: status.passwordRequired,
+        };
+        if (status.passwordRequired) {
+          setLockDialog({ mode: "unlock", group: currentGroup });
+          setLockDialogPassword("");
+          setLockDialogError(null);
+        } else {
+          await unlockGroupWithPassword(currentGroup, "");
+        }
+      } catch {
+        setError(t("launchpad.unlockFailed"));
+      }
+    },
+    [getLockPasswordStatus, navigate, t, unlockGroupWithPassword],
+  );
+
+  /**
+   * 将分组写入持久锁定状态，并立即清除当前页面中的敏感分组数据。
+   */
+  const lockGroupPersistently = useCallback(
+    async (group: LaunchpadGroup, token: string) => {
+      await apiFetch(
+        `/api/v1/launchpad/groups/${encodeURIComponent(group.uuid)}/lock`,
+        {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ locked: true }),
+        },
+      );
+      setLockPasswordBannerGroup(null);
+      if (sortingSnapshotRef.current?.groupUuid === group.uuid) {
+        sortingSnapshotRef.current = null;
+      }
+      setSortingGroupUuid((current) =>
+        current === group.uuid ? null : current,
+      );
+      setSortError((current) =>
+        current?.groupUuid === group.uuid ? null : current,
+      );
+      replaceGroup({
+        ...group,
+        description: null,
+        websites: [],
+        is_locked: true,
+      });
+      setUnlockedGroups((current) => {
+        const next = { ...current };
+        delete next[group.uuid];
+        return next;
+      });
+      setUnlockedGroupIconTokens((current) => {
+        const next = { ...current };
+        delete next[group.uuid];
+        return next;
+      });
+      setCollapsedGroups((current) => ({ ...current, [group.uuid]: true }));
+    },
+    [replaceGroup, setCollapsedGroups],
+  );
+
+  /**
+   * 锁定尚未启用持久锁的分组，缺少密码配置时改为展示上下文横幅。
+   */
+  const handleLockGroup = useCallback(
+    async (group: LaunchpadGroup) => {
+      if (unlockingGroupUuid) return;
+      const token = getUserAccessToken();
+      if (!token) {
+        void navigate("/login");
+        return;
+      }
+      setUnlockingGroupUuid(group.uuid);
+      try {
+        const status = await getLockPasswordStatus(token);
+        if (!status.configured) {
+          setLockPasswordBannerGroup(group);
+          return;
+        }
+        await lockGroupPersistently(
+          {
+            ...group,
+            password_required: status.passwordRequired,
+          },
+          token,
+        );
+      } catch (error) {
+        if (
+          error instanceof ApiRequestError &&
+          error.code === APP_ERROR_CODES.RequestBadRequest
+        ) {
+          setLockPasswordBannerGroup(group);
+        } else {
+          setError(t("launchpad.lockFailed"));
+        }
+      } finally {
+        setUnlockingGroupUuid(null);
+      }
+    },
+    [
+      getLockPasswordStatus,
+      lockGroupPersistently,
+      navigate,
+      t,
+      unlockingGroupUuid,
+    ],
+  );
+
+  const handleRelockGroup = useCallback(
+    async (group: LaunchpadGroup) => {
+      if (unlockingGroupUuid) return;
+      const token = getUserAccessToken();
+      if (!token) {
+        void navigate("/login");
+        return;
+      }
+      setUnlockingGroupUuid(group.uuid);
+      try {
+        const status = await getLockPasswordStatus(token);
+        if (!status.configured) {
+          setLockPasswordBannerGroup(group);
+          return;
+        }
+        await lockGroupPersistently(
+          { ...group, password_required: status.passwordRequired },
+          token,
+        );
+      } catch (error) {
+        if (
+          error instanceof ApiRequestError &&
+          error.code === APP_ERROR_CODES.RequestBadRequest
+        ) {
+          setLockPasswordBannerGroup(group);
+        } else {
+          setError(t("launchpad.lockFailed"));
+        }
+      } finally {
+        setUnlockingGroupUuid(null);
+      }
+    },
+    [
+      getLockPasswordStatus,
+      lockGroupPersistently,
+      navigate,
+      t,
+      unlockingGroupUuid,
+    ],
+  );
+
+  const disableGroupLock = useCallback(
+    async (group: LaunchpadGroup) => {
+      const token = getUserAccessToken();
+      if (!token) {
+        void navigate("/login");
+        return;
+      }
+      await apiFetch(
+        `/api/v1/launchpad/groups/${encodeURIComponent(group.uuid)}/lock`,
+        {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ locked: false }),
+        },
+      );
+      setUnlockedGroups((current) => {
+        const next = { ...current };
+        delete next[group.uuid];
+        return next;
+      });
+      setUnlockedGroupIconTokens((current) => {
+        const next = { ...current };
+        delete next[group.uuid];
+        return next;
+      });
+      replaceGroup({ ...group, is_locked: false });
+    },
+    [navigate, replaceGroup],
+  );
+
+  const handleDisableGroupLock = useCallback(
+    async (group: LaunchpadGroup) => {
+      if (unlockingGroupUuid) return;
+      const token = getUserAccessToken();
+      if (!token) {
+        void navigate("/login");
+        return;
+      }
+      setUnlockingGroupUuid(group.uuid);
+      try {
+        await disableGroupLock(group);
+      } catch {
+        setError(t("launchpad.disableLockFailed"));
+      } finally {
+        setUnlockingGroupUuid(null);
+      }
+    },
+    [disableGroupLock, navigate, t, unlockingGroupUuid],
+  );
+
+  const submitLockDialog = useCallback(async () => {
+    if (!lockDialog) return;
+    setLockDialogError(null);
+    if (lockDialog.mode === "setup" && !lockDialogPassword.trim()) {
+      setLockDialogError(t("launchpad.lockPasswordRequired"));
+      return;
+    }
+    try {
+      if (lockDialog.mode === "unlock") {
+        await unlockGroupWithPassword(lockDialog.group, lockDialogPassword);
+      } else {
+        const token = getUserAccessToken();
+        if (!token) {
+          void navigate("/login");
+          return;
+        }
+        await apiFetch("/api/v1/launchpad/lock-password", {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ new_password: lockDialogPassword }),
+        });
+        await lockGroupPersistently(
+          {
+            ...lockDialog.group,
+            password_required: Boolean(lockDialogPassword.trim()),
+          },
+          token,
+        );
+      }
+      setLockDialog(null);
+      setLockDialogPassword("");
+    } catch {
+      setLockDialogError(
+        lockDialog.mode === "setup"
+          ? t("launchpad.lockFailed")
+          : t("launchpad.unlockFailed"),
+      );
+    }
+  }, [
+    lockDialog,
+    lockDialogPassword,
+    lockGroupPersistently,
+    navigate,
+    t,
+    unlockGroupWithPassword,
+  ]);
+
   const groupOptions = useMemo(
     () =>
-      sortedLaunchpad.map((group) => ({
-        uuid: group.uuid,
-        name: group.name,
-      })),
-    [sortedLaunchpad],
+      sortedLaunchpad
+        .filter(
+          (group) => !group.is_locked || Boolean(unlockedGroups[group.uuid]),
+        )
+        .map((group) => ({
+          uuid: group.uuid,
+          name: group.name,
+        })),
+    [sortedLaunchpad, unlockedGroups],
   );
   const activeSearchEngine = useMemo(
     () =>
@@ -599,13 +1107,20 @@ const LaunchpadPage = () => {
       await Promise.all(
         sitesWithLocalIcons.map(async (site) => {
           try {
-            const response = await apiFetchResponse(
-              `/api/v1/icons/download/${userUuid}/${site.local_icon_path}`,
-              {
-                headers: { Authorization: `Bearer ${token}` },
-                signal: controller.signal,
+            const iconAccessToken =
+              unlockedGroupIconTokens[site.group_uuid] ?? null;
+            const iconUrl = iconAccessToken
+              ? `/api/v1/launchpad/groups/${encodeURIComponent(site.group_uuid)}/icons/${encodeURIComponent(site.local_icon_path as string)}`
+              : `/api/v1/icons/download/${userUuid}/${encodeURIComponent(site.local_icon_path as string)}`;
+            const response = await apiFetchResponse(iconUrl, {
+              headers: {
+                Authorization: `Bearer ${token}`,
+                ...(iconAccessToken
+                  ? { "X-Launchpad-Unlock-Token": iconAccessToken }
+                  : {}),
               },
-            );
+              signal: controller.signal,
+            });
             if (!response.ok) {
               throw new Error(`Icon load failed: ${response.status}`);
             }
@@ -657,7 +1172,7 @@ const LaunchpadPage = () => {
     return () => {
       controller.abort();
     };
-  }, [launchpad, userUuid, iconErrors, iconUrls]);
+  }, [launchpad, userUuid, iconErrors, iconUrls, unlockedGroupIconTokens]);
 
   useEffect(() => {
     return () => {
@@ -994,13 +1509,11 @@ const LaunchpadPage = () => {
         return;
       }
       log.error("Failed to update website order", error);
-      sortingSnapshotRef.current = null;
-      setSortingGroupUuid(null);
+      restoreSortingSnapshot();
       setSortError({
         groupUuid,
         message: t("launchpad.sortFailed"),
       });
-      await loadLaunchpad();
     } finally {
       setSavingOrderGroupUuid(null);
     }
@@ -1060,7 +1573,15 @@ const LaunchpadPage = () => {
       if (editSite?.uuid === site.uuid) {
         closeSiteForm();
       }
-      await loadLaunchpad();
+      discardSiteIconCache(site.uuid);
+      setLaunchpad((current) =>
+        current.map((group) => ({
+          ...group,
+          websites: group.websites.filter(
+            (currentSite) => currentSite.uuid !== site.uuid,
+          ),
+        })),
+      );
     } catch (err) {
       if (isAuthError(err)) {
         clearUserAccessToken();
@@ -1131,7 +1652,7 @@ const LaunchpadPage = () => {
       body.append("payload", JSON.stringify(payload));
       if (pendingIconFile) body.append("icon", pendingIconFile);
 
-      await apiFetch<LaunchpadWebsite>(
+      const response = await apiFetch<LaunchpadWebsite>(
         isCreating
           ? "/api/v1/launchpad/items"
           : `/api/v1/launchpad/items/${editSite.uuid}`,
@@ -1141,7 +1662,11 @@ const LaunchpadPage = () => {
           body,
         },
       );
-      await loadLaunchpad();
+      if (!response.data) {
+        throw new Error("Website response did not include the saved item");
+      }
+      discardSiteIconCache(response.data.uuid, response.data.local_icon_path);
+      mergeSavedSite(response.data);
       closeSiteForm();
       setContextMenu(null);
     } catch (err) {
@@ -1208,6 +1733,26 @@ const LaunchpadPage = () => {
         )}
         {!loading && !error ? (
           <div className={styles.pageLayout} data-slot="launchpad-layout">
+            {lockPasswordBannerGroup ? (
+              <Banner
+                variant="warning"
+                title={t("launchpad.lockPasswordMissingTitle")}
+                description={t("launchpad.lockPasswordMissingHint")}
+                actionLabel={t("launchpad.setLockPassword")}
+                dismissLabel={t("common.close")}
+                dataUi="launchpad-lock-password-banner"
+                onAction={() => {
+                  setLockDialog({
+                    mode: "setup",
+                    group: lockPasswordBannerGroup,
+                  });
+                  setLockDialogPassword("");
+                  setLockDialogError(null);
+                  setLockPasswordBannerGroup(null);
+                }}
+                onDismiss={() => setLockPasswordBannerGroup(null)}
+              />
+            ) : null}
             <section
               className={styles.searchSection}
               data-ui="launchpad-search"
@@ -1428,6 +1973,10 @@ const LaunchpadPage = () => {
                 {filteredLaunchpad.map((group) => {
                   const isSorting = sortingGroupUuid === group.uuid;
                   const isSavingOrder = savingOrderGroupUuid === group.uuid;
+                  const isLocked =
+                    group.is_locked && !unlockedGroups[group.uuid];
+                  const isCollapsed =
+                    isLocked || Boolean(collapsedGroups[group.uuid]);
                   const sortingDisabled =
                     Boolean(searchTerm.trim()) ||
                     group.websites.length < 2 ||
@@ -1463,94 +2012,187 @@ const LaunchpadPage = () => {
                           <button
                             type="button"
                             className={styles.groupActionButton}
-                            data-ui="launchpad-sort-sites"
+                            data-ui="launchpad-lock-group"
                             data-group-uuid={group.uuid}
-                            data-active={isSorting}
-                            aria-label={sortLabel}
-                            aria-pressed={isSorting}
-                            title={
-                              sortingDisabled && !isSorting
-                                ? undefined
-                                : sortLabel
+                            aria-label={
+                              isLocked
+                                ? t("launchpad.unlockGroup")
+                                : t("launchpad.lockGroup")
                             }
-                            disabled={
-                              isSavingOrder || (sortingDisabled && !isSorting)
+                            data-tooltip={
+                              isLocked
+                                ? t("launchpad.unlockGroup")
+                                : t("launchpad.lockGroup")
                             }
-                            onClick={() => void handleToggleSorting(group.uuid)}
-                          >
-                            {isSorting ? (
-                              <svg
-                                viewBox="0 0 512 512"
-                                fill="none"
-                                aria-hidden="true"
-                              >
-                                <path
-                                  d="M465 127 241 384l-92-92m-9 93-93-93m316-165L236 273"
-                                  stroke="currentColor"
-                                  strokeWidth="44"
-                                  strokeLinecap="square"
-                                  strokeMiterlimit="10"
-                                />
-                              </svg>
-                            ) : (
-                              <svg
-                                viewBox="0 0 512 512"
-                                fill="none"
-                                aria-hidden="true"
-                              >
-                                <path
-                                  d="M464 208 352 96 240 208m112-94.87V416M48 304l112 112 112-112m-112 94V96"
-                                  stroke="currentColor"
-                                  strokeWidth="32"
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                />
-                              </svg>
-                            )}
-                          </button>
-                          <button
-                            type="button"
-                            className={styles.groupActionButton}
-                            data-ui="launchpad-add-site"
-                            data-group-uuid={group.uuid}
-                            aria-label={t("launchpad.addToGroup", {
-                              group: group.name,
-                            })}
-                            title={
-                              sortingGroupUuid || savingOrderGroupUuid
-                                ? undefined
-                                : t("launchpad.addSite")
-                            }
-                            disabled={Boolean(
-                              sortingGroupUuid || savingOrderGroupUuid,
-                            )}
-                            onClick={(event) => {
-                              siteFormReturnFocusRef.current =
-                                event.currentTarget;
-                              prepareSiteForm(toCreateForm(group.uuid));
+                            onClick={() => {
+                              if (isLocked) {
+                                void handleUnlockGroup(group);
+                              } else if (group.is_locked) {
+                                void handleRelockGroup(group);
+                              } else {
+                                void handleLockGroup(group);
+                              }
                             }}
+                            disabled={unlockingGroupUuid === group.uuid}
                           >
-                            <svg
-                              viewBox="0 0 24 24"
-                              fill="none"
-                              aria-hidden="true"
-                            >
-                              <path
-                                d="M12 5v14M5 12h14"
-                                stroke="currentColor"
-                                strokeWidth="1.8"
-                                strokeLinecap="round"
-                              />
-                            </svg>
+                            {isLocked ? (
+                              <IoLockClosedOutline aria-hidden="true" />
+                            ) : (
+                              <IoLockOpenOutline aria-hidden="true" />
+                            )}
                           </button>
+                          {!isLocked ? (
+                            <>
+                              {group.is_locked && unlockedGroups[group.uuid] ? (
+                                <button
+                                  type="button"
+                                  className={styles.groupActionButton}
+                                  data-ui="launchpad-disable-group-lock"
+                                  data-group-uuid={group.uuid}
+                                  aria-label={t("launchpad.disableLock")}
+                                  data-tooltip={t("launchpad.disableLock")}
+                                  onClick={() =>
+                                    void handleDisableGroupLock(group)
+                                  }
+                                  disabled={unlockingGroupUuid === group.uuid}
+                                >
+                                  <IoCloseOutline aria-hidden="true" />
+                                </button>
+                              ) : null}
+                              <button
+                                type="button"
+                                className={styles.groupActionButton}
+                                data-ui="launchpad-toggle-group"
+                                data-group-uuid={group.uuid}
+                                aria-label={
+                                  isLocked
+                                    ? t("launchpad.unlockGroup")
+                                    : isCollapsed
+                                      ? t("launchpad.expandGroup")
+                                      : t("launchpad.collapseGroup")
+                                }
+                                aria-expanded={!isCollapsed}
+                                aria-controls={`launchpad-group-grid-${group.uuid}`}
+                                data-tooltip={
+                                  isLocked
+                                    ? t("launchpad.unlockGroup")
+                                    : isCollapsed
+                                      ? t("launchpad.expandGroup")
+                                      : t("launchpad.collapseGroup")
+                                }
+                                onClick={() => {
+                                  if (isSorting) setSortingGroupUuid(null);
+                                  setCollapsedGroups((current) => ({
+                                    ...current,
+                                    [group.uuid]: !current[group.uuid],
+                                  }));
+                                }}
+                                disabled={isLocked}
+                              >
+                                {isCollapsed ? (
+                                  <IoChevronForwardOutline aria-hidden="true" />
+                                ) : (
+                                  <IoChevronDownOutline aria-hidden="true" />
+                                )}
+                              </button>
+                              <button
+                                type="button"
+                                className={styles.groupActionButton}
+                                data-ui="launchpad-sort-sites"
+                                data-group-uuid={group.uuid}
+                                data-active={isSorting}
+                                aria-label={sortLabel}
+                                aria-pressed={isSorting}
+                                data-tooltip={
+                                  sortingDisabled && !isSorting
+                                    ? undefined
+                                    : sortLabel
+                                }
+                                disabled={
+                                  isSavingOrder ||
+                                  (sortingDisabled && !isSorting)
+                                }
+                                onClick={() =>
+                                  void handleToggleSorting(group.uuid)
+                                }
+                              >
+                                {isSorting ? (
+                                  <svg
+                                    viewBox="0 0 512 512"
+                                    fill="none"
+                                    aria-hidden="true"
+                                  >
+                                    <path
+                                      d="M465 127 241 384l-92-92m-9 93-93-93m316-165L236 273"
+                                      stroke="currentColor"
+                                      strokeWidth="44"
+                                      strokeLinecap="square"
+                                      strokeMiterlimit="10"
+                                    />
+                                  </svg>
+                                ) : (
+                                  <svg
+                                    viewBox="0 0 512 512"
+                                    fill="none"
+                                    aria-hidden="true"
+                                  >
+                                    <path
+                                      d="M464 208 352 96 240 208m112-94.87V416M48 304l112 112 112-112m-112 94V96"
+                                      stroke="currentColor"
+                                      strokeWidth="32"
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                    />
+                                  </svg>
+                                )}
+                              </button>
+                              <button
+                                type="button"
+                                className={styles.groupActionButton}
+                                data-ui="launchpad-add-site"
+                                data-group-uuid={group.uuid}
+                                aria-label={t("launchpad.addToGroup", {
+                                  group: group.name,
+                                })}
+                                data-tooltip={
+                                  sortingGroupUuid || savingOrderGroupUuid
+                                    ? undefined
+                                    : t("launchpad.addSite")
+                                }
+                                disabled={Boolean(
+                                  sortingGroupUuid || savingOrderGroupUuid,
+                                )}
+                                onClick={(event) => {
+                                  siteFormReturnFocusRef.current =
+                                    event.currentTarget;
+                                  prepareSiteForm(toCreateForm(group.uuid));
+                                }}
+                              >
+                                <svg
+                                  viewBox="0 0 24 24"
+                                  fill="none"
+                                  aria-hidden="true"
+                                >
+                                  <path
+                                    d="M12 5v14M5 12h14"
+                                    stroke="currentColor"
+                                    strokeWidth="1.8"
+                                    strokeLinecap="round"
+                                  />
+                                </svg>
+                              </button>
+                            </>
+                          ) : null}
                         </div>
-                        <span className={styles.groupBadge}>
-                          {t("launchpad.sitesCount", {
-                            count: group.websites.length,
-                          })}
-                        </span>
+                        {!isLocked ? (
+                          <span className={styles.groupBadge}>
+                            {t("launchpad.sitesCount", {
+                              count: group.websites.length,
+                            })}
+                          </span>
+                        ) : null}
                       </div>
-                      {sortError?.groupUuid === group.uuid ? (
+                      {!isLocked && sortError?.groupUuid === group.uuid ? (
                         <p
                           className={styles.sortError}
                           data-ui="launchpad-sort-error"
@@ -1560,52 +2202,56 @@ const LaunchpadPage = () => {
                           {sortError.message}
                         </p>
                       ) : null}
-                      <DndContext
-                        sensors={sortSensors}
-                        collisionDetection={closestCenter}
-                        onDragEnd={(event) =>
-                          handleSiteDragEnd(group.uuid, event)
-                        }
-                      >
-                        <SortableContext
-                          items={group.websites.map((site) => site.uuid)}
-                          strategy={rectSortingStrategy}
-                          disabled={!isSorting || isSavingOrder}
+                      {!isCollapsed && (
+                        <DndContext
+                          sensors={sortSensors}
+                          collisionDetection={closestCenter}
+                          onDragEnd={(event) =>
+                            handleSiteDragEnd(group.uuid, event)
+                          }
                         >
-                          <div
-                            className={`launchpad-site-grid ${styles.siteGrid}`}
-                            data-slot="launchpad-site-grid"
-                            data-sorting={isSorting}
-                            data-saving={isSavingOrder}
+                          <SortableContext
+                            items={group.websites.map((site) => site.uuid)}
+                            strategy={rectSortingStrategy}
+                            disabled={!isSorting || isSavingOrder}
                           >
-                            {group.websites.map((site) => (
-                              <SortableSiteCard
-                                key={site.uuid}
-                                site={site}
-                                isSorting={isSorting}
-                                isSaving={isSavingOrder}
-                                interactionLocked={Boolean(
-                                  sortingGroupUuid || savingOrderGroupUuid,
-                                )}
-                                localIconUrl={
-                                  site.local_icon_path &&
-                                  iconUrls[site.uuid]?.path ===
+                            <div
+                              className={`launchpad-site-grid ${styles.siteGrid}`}
+                              data-slot="launchpad-site-grid"
+                              id={`launchpad-group-grid-${group.uuid}`}
+                              data-sorting={isSorting}
+                              data-saving={isSavingOrder}
+                            >
+                              {group.websites.map((site) => (
+                                <SortableSiteCard
+                                  key={site.uuid}
+                                  site={site}
+                                  isSorting={isSorting}
+                                  isSaving={isSavingOrder}
+                                  interactionLocked={Boolean(
+                                    sortingGroupUuid || savingOrderGroupUuid,
+                                  )}
+                                  localIconUrl={
                                     site.local_icon_path &&
-                                  iconErrors[site.uuid] !== site.local_icon_path
-                                    ? iconUrls[site.uuid].objectUrl
-                                    : null
-                                }
-                                defaultIconAlt={t("launchpad.defaultIcon")}
-                                moveLabel={t("launchpad.moveSite", {
-                                  title: site.title,
-                                })}
-                                onOpen={handleOpenSite}
-                                onContextMenu={handleContextMenu}
-                              />
-                            ))}
-                          </div>
-                        </SortableContext>
-                      </DndContext>
+                                    iconUrls[site.uuid]?.path ===
+                                      site.local_icon_path &&
+                                    iconErrors[site.uuid] !==
+                                      site.local_icon_path
+                                      ? iconUrls[site.uuid].objectUrl
+                                      : null
+                                  }
+                                  defaultIconAlt={t("launchpad.defaultIcon")}
+                                  moveLabel={t("launchpad.moveSite", {
+                                    title: site.title,
+                                  })}
+                                  onOpen={handleOpenSite}
+                                  onContextMenu={handleContextMenu}
+                                />
+                              ))}
+                            </div>
+                          </SortableContext>
+                        </DndContext>
+                      )}
                     </section>
                   );
                 })}
@@ -1652,6 +2298,78 @@ const LaunchpadPage = () => {
               ? t("launchpad.deleting")
               : t("launchpad.delete")}
           </button>
+        </div>
+      ) : null}
+
+      {lockDialog ? (
+        <div
+          className={styles.lockModalOverlay}
+          data-ui="launchpad-lock-modal"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setLockDialog(null);
+          }}
+        >
+          <form
+            className={styles.lockModal}
+            onSubmit={(event) => {
+              event.preventDefault();
+              void submitLockDialog();
+            }}
+          >
+            <div className={styles.lockModalHeader}>
+              <div>
+                <p className={styles.modalEyebrow}>
+                  {t("launchpad.groupLock")}
+                </p>
+                <h2 className={styles.lockModalTitle}>
+                  {lockDialog.group.name}
+                </h2>
+              </div>
+              <button
+                type="button"
+                className={styles.modalCloseButton}
+                onClick={() => setLockDialog(null)}
+                aria-label={t("common.close")}
+              >
+                ×
+              </button>
+            </div>
+            <p className={styles.lockModalHint}>
+              {lockDialog.mode === "setup"
+                ? t("launchpad.newLockPassword")
+                : t("launchpad.unlockPassword")}
+            </p>
+            <input
+              autoFocus
+              className={styles.formControl}
+              type="password"
+              required
+              value={lockDialogPassword}
+              onChange={(event) => setLockDialogPassword(event.target.value)}
+              data-ui="launchpad-lock-password-input"
+            />
+            {lockDialogError ? (
+              <p className={styles.formError} role="alert">
+                {lockDialogError}
+              </p>
+            ) : null}
+            <div className={styles.modalActions}>
+              <button
+                type="button"
+                className={styles.ghostButton}
+                onClick={() => setLockDialog(null)}
+              >
+                {t("common.cancel")}
+              </button>
+              <button
+                type="submit"
+                className={styles.primaryButton}
+                disabled={unlockingGroupUuid !== null}
+              >
+                {t("common.confirm")}
+              </button>
+            </div>
+          </form>
         </div>
       ) : null}
 

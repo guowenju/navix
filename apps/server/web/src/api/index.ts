@@ -310,9 +310,5 @@ export async function apiFetchResponse(
 }
 
 export function isAuthError(err: unknown): err is AppException {
-  if (isAuthAppError(err)) return true;
-  return (
-    err instanceof AppException &&
-    (err.httpStatus === 400 || err.httpStatus === 401 || err.httpStatus === 403)
-  );
+  return isAuthAppError(err);
 }

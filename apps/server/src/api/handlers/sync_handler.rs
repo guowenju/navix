@@ -111,7 +111,16 @@ pub async fn icon_download_handler(
         return Err(ApiError::ForbiddenResource);
     }
 
-    if !is_safe_path_segment(&user_uuid) || !is_safe_path_segment(&file_name) {
+    serve_user_icon(&request_headers, &user_uuid, &file_name).await
+}
+
+/// 从当前用户的图标目录安全地读取文件并构造带缓存头的下载响应。
+pub async fn serve_user_icon(
+    request_headers: &HeaderMap,
+    user_uuid: &str,
+    file_name: &str,
+) -> ApiResult<Response> {
+    if !is_safe_path_segment(user_uuid) || !is_safe_path_segment(file_name) {
         return Err(ApiError::ForbiddenResource);
     }
 
@@ -119,8 +128,8 @@ pub async fn icon_download_handler(
         .await
         .map_err(|_| ApiError::ResourceNotFound)?;
     let file_path = StdPathBuf::from(STORAGE_BASE_DIR)
-        .join(&user_uuid)
-        .join(&file_name);
+        .join(user_uuid)
+        .join(file_name);
     let canonical_file = fs::canonicalize(&file_path)
         .await
         .map_err(|_| ApiError::NotFound)?;
@@ -184,7 +193,7 @@ pub async fn icon_download_handler(
     let body = Body::from_stream(stream);
 
     let mut headers = HeaderMap::new();
-    let content_type = mime_guess::from_path(&file_name)
+    let content_type = mime_guess::from_path(file_name)
         .first_or_octet_stream()
         .to_string();
     headers.insert(header::CONTENT_TYPE, content_type.parse().unwrap());

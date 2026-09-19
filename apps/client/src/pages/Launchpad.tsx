@@ -72,6 +72,75 @@ const builtInSearchEngines: SearchEngine[] = [
   },
 ];
 
+function readCollapsedGroups(value: string | null): Record<string, boolean> {
+  if (!value) return {};
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+    return Object.fromEntries(
+      Object.entries(parsed).filter(
+        ([, collapsed]) => typeof collapsed === "boolean",
+      ),
+    );
+  } catch {
+    return {};
+  }
+}
+
+type CollapsedGroupsUpdater = (
+  value:
+    | Record<string, boolean>
+    | ((current: Record<string, boolean>) => Record<string, boolean>),
+) => void;
+
+/** 按当前用户存储键同步恢复并持久化折叠状态，避免 StrictMode 重复 effect 覆盖数据。 */
+function usePersistedCollapsedGroups(
+  storageKey: string,
+): [Record<string, boolean>, CollapsedGroupsUpdater] {
+  const [state, setState] = useState(() => ({
+    storageKey,
+    groups: readCollapsedGroups(window.localStorage.getItem(storageKey)),
+  }));
+  const groups = state.storageKey === storageKey ? state.groups : {};
+  const setGroups = useCallback<CollapsedGroupsUpdater>(
+    (value) => {
+      setState((current) => {
+        const currentGroups =
+          current.storageKey === storageKey
+            ? current.groups
+            : readCollapsedGroups(window.localStorage.getItem(storageKey));
+        return {
+          storageKey,
+          groups: typeof value === "function" ? value(currentGroups) : value,
+        };
+      });
+    },
+    [storageKey],
+  );
+
+  useEffect(() => {
+    const groups = readCollapsedGroups(window.localStorage.getItem(storageKey));
+    queueMicrotask(() => {
+      setState((current) =>
+        current.storageKey === storageKey ? current : { storageKey, groups },
+      );
+    });
+  }, [storageKey]);
+
+  useEffect(() => {
+    if (state.storageKey !== storageKey) return;
+    try {
+      window.localStorage.setItem(storageKey, JSON.stringify(state.groups));
+    } catch {
+      // 本地存储不可用时仍保留当前页面内的折叠状态。
+    }
+  }, [state, storageKey]);
+
+  return [groups, setGroups];
+}
+
 const LaunchpadPageContent: React.FC = () => {
   const { t } = useTranslation();
   const { environment, toggleEnvironment } = useEnvironment();
@@ -83,6 +152,10 @@ const LaunchpadPageContent: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [isNavConfigModalOpen, setIsNavConfigModalOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
+  const collapsedGroupsStorageKey = `navix.launchpad.collapsedGroups:${activeUser?.uuid ?? "anonymous"}`;
+  const [collapsedGroups, setCollapsedGroups] = usePersistedCollapsedGroups(
+    collapsedGroupsStorageKey,
+  );
   const [isItemModalOpen, setIsItemModalOpen] = useState(false);
   const [editingItem, setEditingItem] = useState<WebsiteItem | null>(null);
   const [targetGroupUuid, setTargetGroupUuid] = useState<string | null>(null);
@@ -539,6 +612,13 @@ const LaunchpadPageContent: React.FC = () => {
                 void handleCardClick(item);
               }}
               onContextMenu={handleContextMenu}
+              isCollapsed={Boolean(collapsedGroups[group.uuid])}
+              onToggleCollapsed={() => {
+                setCollapsedGroups((current) => ({
+                  ...current,
+                  [group.uuid]: !current[group.uuid],
+                }));
+              }}
             />
           ))}
         </DndContext>

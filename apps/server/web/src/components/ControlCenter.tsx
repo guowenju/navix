@@ -6,7 +6,7 @@ import {
   type FormEvent,
   type ReactNode,
 } from "react";
-import { apiFetch, apiFetchRaw, isAuthError } from "../api";
+import { ApiRequestError, apiFetch, apiFetchRaw, isAuthError } from "../api";
 import {
   getStoredAccountSessions,
   getUserAccessToken,
@@ -17,11 +17,13 @@ import {
 import type { CurrentUser } from "../hooks/useCurrentUser";
 import { useI18n } from "../i18n/useI18n";
 import { log } from "../utils/logger";
+import type { BannerNotice } from "./Banner";
 import styles from "./ControlCenter.module.css";
 
 export type ControlCenterSection = "account" | "preferences" | "admin";
 
 const TRANSIENT_MESSAGE_TIMEOUT_MS = 3000;
+const LOCK_PASSWORD_CLEARED_EVENT = "navix:launchpad-lock-password-cleared";
 
 interface AdminUser {
   uuid: string;
@@ -85,6 +87,7 @@ type ControlCenterProps = {
   onCycleBackground: () => void;
   onChangeContentInset: (contentInset: number) => void;
   onToggleLaunchpadSidebar: () => void;
+  onNotify: (notice: BannerNotice) => void;
   onLogout: () => void;
 };
 
@@ -108,6 +111,7 @@ const ControlCenter = ({
   onCycleBackground,
   onChangeContentInset,
   onToggleLaunchpadSidebar,
+  onNotify,
   onLogout,
 }: ControlCenterProps) => {
   const { t } = useI18n();
@@ -145,6 +149,8 @@ const ControlCenter = ({
     user: AdminUser;
     action: ConfirmAction;
   } | null>(null);
+  const [lockPasswordConfigured, setLockPasswordConfigured] = useState(false);
+  const [lockPassword, setLockPassword] = useState("");
 
   useEffect(() => {
     if (!isOpen) {
@@ -166,6 +172,94 @@ const ControlCenter = ({
       document.removeEventListener("keydown", handleKeyDown);
     };
   }, [isOpen, onClose]);
+
+  useEffect(() => {
+    if (!isOpen || activeSection !== "preferences") return;
+    const token = getUserAccessToken();
+    if (!token) return;
+    void apiFetch<{ configured: boolean }>(
+      "/api/v1/launchpad/lock-password/status",
+      { headers: { Authorization: `Bearer ${token}` } },
+    )
+      .then((response) =>
+        setLockPasswordConfigured(Boolean(response.data?.configured)),
+      )
+      .catch(() => setLockPasswordConfigured(false));
+  }, [activeSection, isOpen]);
+
+  const handleSetLaunchpadLockPassword = async () => {
+    if (!lockPassword.trim()) {
+      onNotify({
+        title: t("launchpad.lockPasswordRequired"),
+        variant: "warning",
+      });
+      return;
+    }
+    try {
+      const token = getUserAccessToken();
+      if (!token) {
+        onLogout();
+        return;
+      }
+      await apiFetch("/api/v1/launchpad/lock-password", {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          new_password: lockPassword,
+        }),
+      });
+      setLockPasswordConfigured(true);
+      onNotify({
+        title: t("launchpad.lockPasswordSaved"),
+        variant: "success",
+      });
+      setLockPassword("");
+    } catch (error) {
+      if (isAuthError(error)) onLogout();
+      else
+        onNotify({
+          title:
+            error instanceof ApiRequestError
+              ? error.message
+              : t("settings.requestFailed"),
+          variant: "error",
+        });
+    }
+  };
+
+  const handleClearLaunchpadLockPassword = async () => {
+    try {
+      const token = getUserAccessToken();
+      if (!token) {
+        onLogout();
+        return;
+      }
+      await apiFetch("/api/v1/launchpad/lock-password", {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setLockPasswordConfigured(false);
+      setLockPassword("");
+      onNotify({
+        title: t("launchpad.lockPasswordCleared"),
+        variant: "success",
+      });
+      window.dispatchEvent(new Event(LOCK_PASSWORD_CLEARED_EVENT));
+    } catch (error) {
+      if (isAuthError(error)) onLogout();
+      else
+        onNotify({
+          title:
+            error instanceof ApiRequestError
+              ? error.message
+              : t("settings.requestFailed"),
+          variant: "error",
+        });
+    }
+  };
 
   const fetchAdminUsers = useCallback(
     async (mode: "initial" | "refresh" = "initial") => {
@@ -1121,6 +1215,75 @@ const ControlCenter = ({
                             ? t("controlCenter.disable")
                             : t("controlCenter.enable")}
                         </button>
+                      </div>
+                    </section>
+
+                    <section
+                      className={`control-center-preference-card ${styles.preferenceCard} ${styles.lockPasswordCard}`}
+                      data-ui="control-center-launchpad-lock-password-card"
+                    >
+                      <div className={styles.lockPasswordHeader}>
+                        <div className={styles.preferenceInfo}>
+                          <p className={styles.preferenceLabel}>
+                            {t("launchpad.lockPassword")}
+                          </p>
+                        </div>
+                        <span className={styles.lockPasswordStatus}>
+                          {lockPasswordConfigured
+                            ? t("launchpad.lockPasswordConfigured")
+                            : t("launchpad.lockPasswordUnconfigured")}
+                        </span>
+                      </div>
+                      <div className={styles.lockPasswordSection}>
+                        <p className={styles.lockPasswordSectionTitle}>
+                          {lockPasswordConfigured
+                            ? t("launchpad.changeLockPassword")
+                            : t("launchpad.setLockPassword")}
+                        </p>
+                        <div
+                          className={styles.lockPasswordFields}
+                          data-slot="launchpad-lock-password-form"
+                        >
+                          <label className={styles.lockPasswordField}>
+                            <span>{t("launchpad.newLockPassword")}</span>
+                            <input
+                              className={styles.preferenceInput}
+                              type="password"
+                              required
+                              autoComplete="new-password"
+                              value={lockPassword}
+                              onChange={(event) =>
+                                setLockPassword(event.target.value)
+                              }
+                            />
+                          </label>
+                        </div>
+                        <div className={styles.lockPasswordActions}>
+                          <button
+                            type="button"
+                            className={styles.sectionSecondaryButton}
+                            data-ui="control-center-set-launchpad-lock-password"
+                            onClick={() =>
+                              void handleSetLaunchpadLockPassword()
+                            }
+                          >
+                            {lockPasswordConfigured
+                              ? t("launchpad.changeLockPassword")
+                              : t("launchpad.setLockPassword")}
+                          </button>
+                          {lockPasswordConfigured ? (
+                            <button
+                              type="button"
+                              className={styles.sectionDangerButton}
+                              data-ui="control-center-clear-launchpad-lock-password"
+                              onClick={() =>
+                                void handleClearLaunchpadLockPassword()
+                              }
+                            >
+                              {t("launchpad.clearLockPassword")}
+                            </button>
+                          ) : null}
+                        </div>
                       </div>
                     </section>
                   </div>

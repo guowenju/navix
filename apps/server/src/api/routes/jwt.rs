@@ -29,6 +29,8 @@ use std::net::SocketAddr;
 use std::sync::{Arc, LazyLock};
 
 const ACCESS_TOKEN_LIFETIME_MINUTES: i64 = 24 * 60;
+const LAUNCHPAD_ICON_TOKEN_LIFETIME_MINUTES: i64 = 24 * 60;
+const LAUNCHPAD_ICON_TOKEN_PURPOSE: &str = "launchpad_group_icon";
 pub const SUBJECT_TYPE_USER: &str = "user";
 
 static KEYS: LazyLock<Keys> = LazyLock::new(|| {
@@ -239,6 +241,46 @@ fn build_access_token(
     encode(&Header::default(), &claims, &KEYS.encoding).map_err(|_| ApiError::TokenCreation)
 }
 
+/// 签发仅允许当前 Web 页面读取指定分组图标的短期凭据。
+pub fn issue_launchpad_icon_token(
+    server_instance_uuid: uuid::Uuid,
+    user_uuid: &str,
+    group_uuid: &str,
+) -> ApiResult<String> {
+    let expiration_time = Utc::now()
+        .checked_add_signed(Duration::minutes(LAUNCHPAD_ICON_TOKEN_LIFETIME_MINUTES))
+        .expect("valid timestamp")
+        .timestamp();
+    let claims = LaunchpadIconClaims {
+        sub: user_uuid.to_string(),
+        group_uuid: group_uuid.to_string(),
+        exp: expiration_time as usize,
+        iss: server_instance_uuid.to_string(),
+        purpose: LAUNCHPAD_ICON_TOKEN_PURPOSE.to_string(),
+    };
+    encode(&Header::default(), &claims, &KEYS.encoding).map_err(|_| ApiError::TokenCreation)
+}
+
+/// 校验 Web 分组图标凭据是否属于当前用户与目标分组。
+pub fn validate_launchpad_icon_token(
+    server_instance_uuid: uuid::Uuid,
+    token: &str,
+    user_uuid: &str,
+    group_uuid: &str,
+) -> ApiResult<()> {
+    let claims = decode::<LaunchpadIconClaims>(token, &KEYS.decoding, &Validation::default())
+        .map_err(|_| ApiError::ForbiddenResource)?
+        .claims;
+    if claims.iss != server_instance_uuid.to_string()
+        || claims.sub != user_uuid
+        || claims.group_uuid != group_uuid
+        || claims.purpose != LAUNCHPAD_ICON_TOKEN_PURPOSE
+    {
+        return Err(ApiError::ForbiddenResource);
+    }
+    Ok(())
+}
+
 /// 提取客户端真实 IP（优先代理头，其次连接地址）。
 fn get_client_ip(headers: &HeaderMap, addr: &SocketAddr) -> String {
     let remote_ip = addr.ip().to_string();
@@ -270,6 +312,16 @@ impl Keys {
             decoding: DecodingKey::from_secret(secret),
         }
     }
+}
+
+/// Web 分组解锁后用于读取本地图标的短期 JWT 载荷。
+#[derive(Debug, Serialize, Deserialize)]
+struct LaunchpadIconClaims {
+    sub: String,
+    group_uuid: String,
+    exp: usize,
+    iss: String,
+    purpose: String,
 }
 
 /// 鉴权上下文载荷。
@@ -427,4 +479,27 @@ pub async fn admin_only(req: Request, next: Next) -> ApiResult<Response> {
     }
 
     Ok(next.run(req).await)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{issue_launchpad_icon_token, validate_launchpad_icon_token};
+    use crate::error::ApiError;
+    use uuid::Uuid;
+
+    #[test]
+    fn launchpad_icon_token_is_scoped_to_user_group_and_server() {
+        let server_uuid = Uuid::new_v4();
+        let token = issue_launchpad_icon_token(server_uuid, "user-a", "group-a").unwrap();
+
+        validate_launchpad_icon_token(server_uuid, &token, "user-a", "group-a").unwrap();
+        assert!(matches!(
+            validate_launchpad_icon_token(server_uuid, &token, "user-a", "group-b"),
+            Err(ApiError::ForbiddenResource)
+        ));
+        assert!(matches!(
+            validate_launchpad_icon_token(Uuid::new_v4(), &token, "user-a", "group-a"),
+            Err(ApiError::ForbiddenResource)
+        ));
+    }
 }

@@ -153,14 +153,16 @@ export const SectionHeader = styled.div`
 
   /* 悬停时显示按钮 */
   &:hover .add-item-action-icon,
-  &:hover .sort-items-action-icon {
+  &:hover .sort-items-action-icon,
+  &:hover .toggle-group-action-icon {
     opacity: 1;
     transform: translateX(0);
   }
 
   /* 当处于排序状态时，也总是显示按钮 */
   &.is-sorting .add-item-action-icon,
-  &.is-sorting .sort-items-action-icon {
+  &.is-sorting .sort-items-action-icon,
+  &.is-sorting .toggle-group-action-icon {
     opacity: 1;
     transform: translateX(0);
   }
@@ -195,7 +197,15 @@ export const HeaderActions = styled.div`
   gap: 10px;
 `;
 
-export const ActionIcon = styled.div`
+export const ActionIcon = styled.button`
+  border: 0;
+  background: transparent;
+  padding: 0;
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   cursor: pointer;
   color: ${(props) => props.theme.colors.textSecondary};
   font-size: 1.2rem;
@@ -204,6 +214,18 @@ export const ActionIcon = styled.div`
   transition: all 0.2s ease-in-out;
   &:hover {
     color: ${(props) => props.theme.colors.primary};
+    background: ${(props) => props.theme.colors.primaryFocus};
+    border-radius: ${(props) => props.theme.radii.base};
+  }
+  &:focus-visible {
+    opacity: 1;
+    transform: translateX(0);
+    outline: 2px solid ${(props) => props.theme.colors.primary};
+    outline-offset: 2px;
+  }
+  svg {
+    width: 18px;
+    height: 18px;
   }
 `;
 

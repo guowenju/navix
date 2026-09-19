@@ -522,6 +522,7 @@
 }
 
 .groupActionButton {
+  position: relative;
   width: 32px;
   height: 32px;
   flex: 0 0 32px;
@@ -540,9 +541,84 @@
     background-color 0.2s ease;
 }
 
+.groupActionButton::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 8px);
+  z-index: 12;
+  max-width: 220px;
+  padding: 6px 9px;
+  border: 1px solid var(--app-card-border);
+  border-radius: 8px;
+  background: var(--app-card-bg-strong);
+  box-shadow: var(--app-shadow-soft);
+  color: var(--app-text-primary);
+  font-size: 0.76rem;
+  font-weight: 500;
+  line-height: 1.2;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transform: translate(-50%, 4px);
+  transition:
+    opacity 0.16s ease,
+    transform 0.16s ease,
+    visibility 0.16s ease;
+}
+
+.groupActionButton[data-tooltip]:hover::after,
+.groupActionButton[data-tooltip]:focus-visible::after {
+  opacity: 1;
+  visibility: visible;
+  transform: translate(-50%, 0);
+}
+
 .groupActionButton svg {
   width: 18px;
   height: 18px;
+}
+
+.lockModalOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(6, 10, 20, 0.62);
+  backdrop-filter: blur(10px);
+}
+
+.lockModal {
+  width: min(420px, 100%);
+  display: grid;
+  gap: 14px;
+  padding: 22px;
+  border: 1px solid var(--app-card-border);
+  border-radius: 22px;
+  background: var(--app-card-bg-strong);
+  box-shadow: var(--app-shadow-hard);
+}
+
+.lockModalHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.lockModalTitle {
+  margin: 2px 0 0;
+  color: var(--app-text-primary);
+  font-size: 1.2rem;
+}
+
+.lockModalHint {
+  margin: 0;
+  color: var(--app-text-muted);
+  font-size: 0.9rem;
 }
 
 .groupHeader:hover .groupActionButton,
@@ -1018,6 +1094,10 @@
 }
 
 @media (hover: none) {
+  .groupActionButton::after {
+    display: none;
+  }
+
   .groupActionButton {
     opacity: 1;
   }
@@ -1029,6 +1109,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .groupActionButton,
+  .groupActionButton::after,
   .siteCard,
   .iconActionButton {
     transition: none;

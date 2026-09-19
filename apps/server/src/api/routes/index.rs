@@ -3,8 +3,12 @@ use crate::api::handlers::admin_handler::{
     enable_user_handler, list_users_handler,
 };
 use crate::api::handlers::navigation_handler::{
-    create_navigation_item_handler, delete_navigation_item_handler, get_navigation_handler,
-    reorder_navigation_items_handler, update_navigation_item_handler,
+    clear_launchpad_lock_password_handler, create_navigation_item_handler,
+    delete_navigation_item_handler, download_unlocked_launchpad_icon_handler,
+    get_launchpad_lock_password_status_handler, get_navigation_handler,
+    reorder_navigation_items_handler, set_launchpad_group_lock_handler,
+    set_launchpad_lock_password_handler, unlock_launchpad_group_handler,
+    update_navigation_item_handler,
 };
 use crate::api::handlers::sync_handler::{
     icon_download_handler, icon_upload_handler, sync_chunk_handler, sync_complete_handler,
@@ -73,6 +77,26 @@ pub fn protected_api_v1_protected() -> Router<Arc<AppState>> {
     Router::new()
         .route("/auth/status", get(check_auth_status_handler))
         .route("/launchpad", get(get_navigation_handler))
+        .route(
+            "/launchpad/lock-password/status",
+            get(get_launchpad_lock_password_status_handler),
+        )
+        .route(
+            "/launchpad/lock-password",
+            put(set_launchpad_lock_password_handler).delete(clear_launchpad_lock_password_handler),
+        )
+        .route(
+            "/launchpad/groups/{group_uuid}/unlock",
+            post(unlock_launchpad_group_handler),
+        )
+        .route(
+            "/launchpad/groups/{group_uuid}/icons/{file_name}",
+            get(download_unlocked_launchpad_icon_handler),
+        )
+        .route(
+            "/launchpad/groups/{group_uuid}/lock",
+            put(set_launchpad_group_lock_handler),
+        )
         .route("/launchpad/items", post(create_navigation_item_handler))
         .route(
             "/launchpad/items/{uuid}",

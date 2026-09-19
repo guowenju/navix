@@ -18,6 +18,7 @@ import {
   IoAddCircleOutline,
   IoSwapVertical,
   IoCheckmarkDoneSharp,
+  IoChevronDown,
 } from "react-icons/io5";
 import Tooltip from "@/components/common/Tooltip/Tooltip";
 import { useTranslation } from "react-i18next";
@@ -100,6 +101,8 @@ interface WebsiteGroupSectionProps {
   onAddItem: (groupUuid: string) => void;
   onCardClick: (item: WebsiteItem) => void;
   onContextMenu: (e: React.MouseEvent, item: WebsiteItem) => void;
+  isCollapsed: boolean;
+  onToggleCollapsed: () => void;
 }
 
 const WebsiteGroupSection: React.FC<WebsiteGroupSectionProps> = ({
@@ -108,6 +111,8 @@ const WebsiteGroupSection: React.FC<WebsiteGroupSectionProps> = ({
   onAddItem,
   onCardClick,
   onContextMenu,
+  isCollapsed,
+  onToggleCollapsed,
 }) => {
   const { t } = useTranslation();
   const [isSorting, setIsSorting] = useState(false);
@@ -121,6 +126,33 @@ const WebsiteGroupSection: React.FC<WebsiteGroupSectionProps> = ({
       >
         <SectionTitle>{group.name}</SectionTitle>
         <HeaderActions>
+          <Tooltip
+            text={
+              isCollapsed
+                ? t("launchpad.expandGroup")
+                : t("launchpad.collapseGroup")
+            }
+          >
+            <ActionIcon
+              onClick={() => {
+                setIsSorting(false);
+                onToggleCollapsed();
+              }}
+              className="toggle-group-action-icon"
+              aria-label={
+                isCollapsed
+                  ? t("launchpad.expandGroup")
+                  : t("launchpad.collapseGroup")
+              }
+              aria-expanded={!isCollapsed}
+            >
+              <IoChevronDown
+                style={{
+                  transform: isCollapsed ? "rotate(-90deg)" : undefined,
+                }}
+              />
+            </ActionIcon>
+          </Tooltip>
           <Tooltip
             text={isSorting ? t("launchpad.sortDone") : t("launchpad.sort")}
           >
@@ -141,25 +173,27 @@ const WebsiteGroupSection: React.FC<WebsiteGroupSectionProps> = ({
           </Tooltip>
         </HeaderActions>
       </SectionHeader>
-      <SortableContext
-        items={items.map((i) => i.uuid)}
-        strategy={rectSortingStrategy}
-        disabled={!isSorting}
-      >
-        <LaunchpadGrid className="Launchpad-grid">
-          <AnimatePresence>
-            {items.map((item) => (
-              <SortableLaunchpadCard
-                key={item.uuid}
-                item={item}
-                isSorting={isSorting}
-                onCardClick={onCardClick}
-                onContextMenu={onContextMenu}
-              />
-            ))}
-          </AnimatePresence>
-        </LaunchpadGrid>
-      </SortableContext>
+      {!isCollapsed && (
+        <SortableContext
+          items={items.map((i) => i.uuid)}
+          strategy={rectSortingStrategy}
+          disabled={!isSorting}
+        >
+          <LaunchpadGrid className="Launchpad-grid">
+            <AnimatePresence>
+              {items.map((item) => (
+                <SortableLaunchpadCard
+                  key={item.uuid}
+                  item={item}
+                  isSorting={isSorting}
+                  onCardClick={onCardClick}
+                  onContextMenu={onContextMenu}
+                />
+              ))}
+            </AnimatePresence>
+          </LaunchpadGrid>
+        </SortableContext>
+      )}
     </LaunchpadGroupSectionStyles>
   );
 };

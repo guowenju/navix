@@ -57,6 +57,9 @@ catalogs:
     react-dom:
       specifier: 19.2.3
       version: 19.2.3
+    react-icons:
+      specifier: 5.5.0
+      version: 5.5.0
     react-router-dom:
       specifier: 7.11.0
       version: 7.11.0
@@ -189,7 +192,7 @@ importers:
         specifier: 17.0.4
         version: 17.0.4(i18next@26.0.6(typescript@6.0.3))(react-dom@19.2.3(react@19.2.3))(react@19.2.3)(typescript@6.0.3)
       react-icons:
-        specifier: 5.5.0
+        specifier: 'catalog:'
         version: 5.5.0(react@19.2.3)
       react-markdown:
         specifier: ^10.1.0
@@ -258,6 +261,9 @@ importers:
       react-dom:
         specifier: 'catalog:'
         version: 19.2.3(react@19.2.3)
+      react-icons:
+        specifier: 'catalog:'
+        version: 5.5.0(react@19.2.3)
       react-router-dom:
         specifier: 'catalog:'
         version: 7.11.0(react-dom@19.2.3(react@19.2.3))(react@19.2.3)

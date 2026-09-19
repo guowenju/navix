@@ -22,6 +22,7 @@ catalog:
   prettier: 3.6.2
   react: 19.2.3
   react-dom: 19.2.3
+  react-icons: 5.5.0
   react-router-dom: 7.11.0
   ts-prune: 0.10.3
   typescript: 6.0.3

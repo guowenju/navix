@@ -65,6 +65,42 @@ pub struct NavigationGroup {
     pub description: Option<String>,
     pub sort_order: Option<i64>,
     pub websites: Vec<NavigationWebsite>,
+    /// 当前用户是否为该分组启用了 Web 锁定。
+    pub is_locked: bool,
+    /// 当前用户的锁定密码是否非空。
+    pub password_required: bool,
+}
+
+/// Web 端分组解锁请求体。
+#[derive(Debug, Deserialize)]
+pub struct LaunchpadUnlockPayload {
+    pub password: String,
+}
+
+/// Web 端分组解锁结果，包含完整分组和当前页面使用的图标访问凭据。
+#[derive(Debug, Serialize)]
+pub struct LaunchpadUnlockResponse {
+    pub group: NavigationGroup,
+    pub icon_access_token: String,
+}
+
+/// Web 端分组锁定状态变更请求体。
+#[derive(Debug, Deserialize)]
+pub struct LaunchpadLockPayload {
+    pub locked: bool,
+}
+
+/// Web 端设置或修改分组锁密码请求体。
+#[derive(Debug, Deserialize)]
+pub struct LaunchpadLockPasswordPayload {
+    pub new_password: String,
+}
+
+/// Web 端分组锁密码状态。
+#[derive(Debug, Serialize)]
+pub struct LaunchpadLockPasswordStatus {
+    pub configured: bool,
+    pub password_required: bool,
 }
 
 /// Web 端创建导航站点时提交的请求体。

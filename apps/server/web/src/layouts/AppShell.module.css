@@ -29,6 +29,20 @@
   pointer-events: none;
 }
 
+.notificationLayer {
+  position: fixed;
+  top: 18px;
+  left: 50%;
+  z-index: 1700;
+  width: min(680px, calc(100vw - 36px));
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.notificationLayer > * {
+  pointer-events: auto;
+}
+
 .pageActionButton {
   display: inline-flex;
   align-items: center;
@@ -95,6 +109,11 @@
     top: 12px;
     right: 10px;
     gap: 8px;
+  }
+
+  .notificationLayer {
+    top: 12px;
+    width: calc(100vw - 20px);
   }
 
   .pageActionButton {

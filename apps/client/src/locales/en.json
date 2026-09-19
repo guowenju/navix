@@ -128,6 +128,8 @@
       "errorIconMissing": "Icon lost."
     },
     "addItem": "Add Website",
+    "collapseGroup": "Collapse group",
+    "expandGroup": "Expand group",
     "editItem": "Edit Website",
     "resetColor": "Reset Color",
     "selectGroup": "Please select a group",

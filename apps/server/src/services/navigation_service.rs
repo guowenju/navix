@@ -4,9 +4,12 @@ use crate::config::STORAGE_BASE_DIR;
 use crate::db::DbPool;
 use crate::error::{ApiError, ApiResult};
 use crate::models::website::{
-    CreateWebsitePayload, DEFAULT_WEBSITE_ICON, NavigationGroup, NavigationWebsite,
-    UpdateWebsitePayload, WebsiteGroupDto, WebsiteIconAction, WebsitesDto,
+    CreateWebsitePayload, DEFAULT_WEBSITE_ICON, LaunchpadLockPasswordPayload,
+    LaunchpadLockPasswordStatus, LaunchpadLockPayload, LaunchpadUnlockPayload, NavigationGroup,
+    NavigationWebsite, UpdateWebsitePayload, WebsiteGroupDto, WebsiteIconAction, WebsitesDto,
 };
+use bcrypt::{DEFAULT_COST, hash, verify};
+use chrono::Utc;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -23,17 +26,37 @@ pub struct ValidatedWebsiteIcon {
     pub extension: &'static str,
 }
 
+#[derive(Debug, sqlx::FromRow)]
+struct NavigationGroupRow {
+    uuid: String,
+    name: String,
+    description: Option<String>,
+    sort_order: Option<i64>,
+    is_locked: i64,
+    password_required: i64,
+}
+
 /// 获取指定用户的导航数据，只返回未删除的分组和网站。
 pub async fn fetch_navigation_for_user(
     pool: &DbPool,
     user_uuid: &str,
 ) -> Result<Vec<NavigationGroup>, sqlx::Error> {
-    let groups = sqlx::query_as::<_, WebsiteGroupDto>(
+    let groups = sqlx::query_as::<_, NavigationGroupRow>(
         r#"
-        SELECT uuid, name, description, sort_order, is_deleted, rev, updated_at
-        FROM website_groups
-        WHERE user_uuid = ?1 AND is_deleted = 0
-        ORDER BY sort_order IS NULL, sort_order ASC, updated_at DESC
+        SELECT
+            groups.uuid,
+            groups.name,
+            CASE WHEN locks.group_uuid IS NULL THEN groups.description ELSE NULL END AS description,
+            groups.sort_order,
+            CASE WHEN locks.group_uuid IS NULL THEN 0 ELSE 1 END AS is_locked,
+            CASE WHEN settings.password_hash IS NULL THEN 0 ELSE 1 END AS password_required
+        FROM website_groups AS groups
+        LEFT JOIN launchpad_group_locks AS locks
+            ON locks.group_uuid = groups.uuid AND locks.user_uuid = ?1
+        LEFT JOIN launchpad_lock_settings AS settings
+            ON settings.user_uuid = groups.user_uuid
+        WHERE groups.user_uuid = ?1 AND groups.is_deleted = 0
+        ORDER BY groups.sort_order IS NULL, groups.sort_order ASC, groups.updated_at DESC
         "#,
     )
     .bind(user_uuid)
@@ -45,6 +68,11 @@ pub async fn fetch_navigation_for_user(
         SELECT uuid, group_uuid, title, url, url_lan, default_icon, local_icon_path, background_color, description, sort_order, is_deleted, rev, updated_at
         FROM websites
         WHERE user_uuid = ?1 AND is_deleted = 0
+          AND NOT EXISTS (
+              SELECT 1 FROM launchpad_group_locks
+              WHERE launchpad_group_locks.user_uuid = websites.user_uuid
+                AND launchpad_group_locks.group_uuid = websites.group_uuid
+          )
         ORDER BY sort_order IS NULL, sort_order ASC, updated_at DESC
         "#,
     )
@@ -63,6 +91,8 @@ pub async fn fetch_navigation_for_user(
                     description: group.description,
                     sort_order: group.sort_order,
                     websites: Vec::new(),
+                    is_locked: group.is_locked != 0,
+                    password_required: group.password_required != 0,
                 },
             )
         })
@@ -98,6 +128,193 @@ pub async fn fetch_navigation_for_user(
     groups.sort_by(|a, b| compare_sort_then_title(a.sort_order, b.sort_order, &a.name, &b.name));
 
     Ok(groups)
+}
+
+/// 读取指定用户的单个分组完整导航数据，供密码验证成功后的当前会话使用。
+pub async fn fetch_navigation_group_for_user(
+    pool: &DbPool,
+    user_uuid: &str,
+    group_uuid: &str,
+) -> ApiResult<NavigationGroup> {
+    let group = sqlx::query_as::<_, WebsiteGroupDto>(
+        "SELECT uuid, name, description, sort_order, is_deleted, rev, updated_at FROM website_groups WHERE uuid = ?1 AND user_uuid = ?2 AND is_deleted = 0 LIMIT 1",
+    )
+    .bind(group_uuid)
+    .bind(user_uuid)
+    .fetch_optional(pool)
+    .await?
+    .ok_or(ApiError::ResourceNotFound)?;
+
+    let websites = sqlx::query_as::<_, WebsitesDto>(
+        "SELECT uuid, group_uuid, title, url, url_lan, default_icon, local_icon_path, background_color, description, sort_order, is_deleted, rev, updated_at FROM websites WHERE user_uuid = ?1 AND group_uuid = ?2 AND is_deleted = 0 ORDER BY sort_order IS NULL, sort_order ASC, updated_at DESC",
+    )
+    .bind(user_uuid)
+    .bind(group_uuid)
+    .fetch_all(pool)
+    .await?;
+
+    let password_required = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT password_hash FROM launchpad_lock_settings WHERE user_uuid = ?1",
+    )
+    .bind(user_uuid)
+    .fetch_optional(pool)
+    .await?
+    .flatten()
+    .is_some();
+
+    Ok(NavigationGroup {
+        uuid: group.uuid,
+        name: group.name,
+        description: group.description,
+        sort_order: group.sort_order,
+        websites: websites
+            .into_iter()
+            .map(navigation_website_from_dto)
+            .collect(),
+        is_locked: true,
+        password_required,
+    })
+}
+
+fn navigation_website_from_dto(site: WebsitesDto) -> NavigationWebsite {
+    NavigationWebsite {
+        uuid: site.uuid,
+        group_uuid: site.group_uuid,
+        title: site.title,
+        url: site.url,
+        url_lan: site.url_lan,
+        default_icon: site.default_icon,
+        local_icon_path: site.local_icon_path,
+        background_color: site.background_color,
+        description: site.description,
+        sort_order: site.sort_order,
+    }
+}
+
+/// 验证并规范化 Web 分组锁密码，空白密码按空密码处理。
+fn normalize_lock_password(value: &str) -> ApiResult<String> {
+    let normalized = value.trim();
+    if normalized.is_empty() {
+        return Err(ApiError::BadRequest("分组锁密码不能为空".to_string()));
+    }
+    if normalized.chars().count() > 128 {
+        return Err(ApiError::BadRequest(
+            "分组锁密码不能超过 128 个字符".to_string(),
+        ));
+    }
+    Ok(normalized.to_string())
+}
+
+/// 查询当前用户的分组锁密码状态。
+pub async fn get_lock_password_status(
+    pool: &DbPool,
+    user_uuid: &str,
+) -> ApiResult<LaunchpadLockPasswordStatus> {
+    let hash = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT password_hash FROM launchpad_lock_settings WHERE user_uuid = ?1",
+    )
+    .bind(user_uuid)
+    .fetch_optional(pool)
+    .await?
+    .flatten();
+    let configured = hash.is_some();
+    Ok(LaunchpadLockPasswordStatus {
+        configured,
+        password_required: configured,
+    })
+}
+
+/// 保存当前用户规范化后的 Web 分组锁密码，不执行旧密码校验。
+async fn save_lock_password(pool: &DbPool, user_uuid: &str, password: &str) -> ApiResult<()> {
+    let password = normalize_lock_password(password)?;
+    let password_hash = hash(password, DEFAULT_COST)?;
+    let now = Utc::now().to_rfc3339();
+    sqlx::query(
+        "INSERT INTO launchpad_lock_settings (user_uuid, password_hash, created_at, updated_at) VALUES (?1, ?2, ?3, ?3) ON CONFLICT(user_uuid) DO UPDATE SET password_hash = excluded.password_hash, updated_at = excluded.updated_at",
+    )
+    .bind(user_uuid)
+    .bind(password_hash)
+    .bind(now)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// 设置或修改当前用户独立管理的 Web 分组锁密码。
+pub async fn set_lock_password(
+    pool: &DbPool,
+    user_uuid: &str,
+    payload: &LaunchpadLockPasswordPayload,
+) -> ApiResult<()> {
+    save_lock_password(pool, user_uuid, &payload.new_password).await
+}
+
+/// 清除当前用户的 Web 分组锁密码配置，并解除全部分组锁定状态。
+pub async fn clear_lock_password(pool: &DbPool, user_uuid: &str) -> ApiResult<()> {
+    let mut transaction = pool.begin().await?;
+    sqlx::query("DELETE FROM launchpad_group_locks WHERE user_uuid = ?1")
+        .bind(user_uuid)
+        .execute(transaction.as_mut())
+        .await?;
+    sqlx::query("DELETE FROM launchpad_lock_settings WHERE user_uuid = ?1")
+        .bind(user_uuid)
+        .execute(transaction.as_mut())
+        .await?;
+    transaction.commit().await?;
+    Ok(())
+}
+
+/// 验证分组锁密码并返回该分组的完整数据。
+pub async fn unlock_group(
+    pool: &DbPool,
+    user_uuid: &str,
+    group_uuid: &str,
+    payload: &LaunchpadUnlockPayload,
+) -> ApiResult<NavigationGroup> {
+    ensure_group_owner(pool, user_uuid, group_uuid).await?;
+    let hash = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT password_hash FROM launchpad_lock_settings WHERE user_uuid = ?1",
+    )
+    .bind(user_uuid)
+    .fetch_optional(pool)
+    .await?
+    .flatten();
+    if let Some(hash) = hash
+        && !verify(&normalize_lock_password(&payload.password)?, &hash)?
+    {
+        return Err(ApiError::InvalidPassword);
+    }
+    fetch_navigation_group_for_user(pool, user_uuid, group_uuid).await
+}
+
+/// 修改当前用户指定分组的持久锁定状态。
+pub async fn set_group_lock(
+    pool: &DbPool,
+    user_uuid: &str,
+    group_uuid: &str,
+    payload: &LaunchpadLockPayload,
+) -> ApiResult<()> {
+    ensure_group_owner(pool, user_uuid, group_uuid).await?;
+    if payload.locked {
+        if !get_lock_password_status(pool, user_uuid).await?.configured {
+            return Err(ApiError::BadRequest("请先设置分组锁密码".to_string()));
+        }
+        sqlx::query(
+            "INSERT OR IGNORE INTO launchpad_group_locks (user_uuid, group_uuid) VALUES (?1, ?2)",
+        )
+        .bind(user_uuid)
+        .bind(group_uuid)
+        .execute(pool)
+        .await?;
+        return Ok(());
+    }
+
+    sqlx::query("DELETE FROM launchpad_group_locks WHERE user_uuid = ?1 AND group_uuid = ?2")
+        .bind(user_uuid)
+        .bind(group_uuid)
+        .execute(pool)
+        .await?;
+    Ok(())
 }
 
 /// 校验上传图标的扩展名、文件签名和 SVG 主动内容。
@@ -342,23 +559,26 @@ pub async fn update_website_for_user(
     website_uuid: &str,
     payload: &UpdateWebsitePayload,
     icon: Option<&ValidatedWebsiteIcon>,
-) -> ApiResult<()> {
+) -> ApiResult<NavigationWebsite> {
     // 先验证站点属于当前用户，再继续后续更新，避免用 rows_affected
     // 同时承担“资源不存在”和“越权访问”两种语义判定。
-    let existing = sqlx::query_as::<_, (Option<String>, Option<String>, Option<String>)>(
-        r#"
-        SELECT local_icon_path, default_icon, icon_source
+    let existing =
+        sqlx::query_as::<_, (Option<String>, Option<String>, Option<String>, Option<i64>)>(
+            r#"
+        SELECT local_icon_path, default_icon, icon_source, sort_order
         FROM websites
         WHERE uuid = ?1 AND user_uuid = ?2 AND is_deleted = 0
         LIMIT 1
         "#,
-    )
-    .bind(website_uuid)
-    .bind(user_uuid)
-    .fetch_optional(pool)
-    .await?;
+        )
+        .bind(website_uuid)
+        .bind(user_uuid)
+        .fetch_optional(pool)
+        .await?;
 
-    let Some((previous_icon_path, previous_default_icon, previous_icon_source)) = existing else {
+    let Some((previous_icon_path, previous_default_icon, previous_icon_source, sort_order)) =
+        existing
+    else {
         return Err(ApiError::ResourceNotFound);
     };
     ensure_group_owner(pool, user_uuid, &payload.group_uuid).await?;
@@ -418,8 +638,8 @@ pub async fn update_website_for_user(
     .bind(&payload.group_uuid)
     .bind(payload.title.trim())
     .bind(payload.url.trim())
-    .bind(url_lan)
-    .bind(default_icon)
+    .bind(&url_lan)
+    .bind(&default_icon)
     .bind(&local_icon_path)
     .bind(&icon_source)
     .bind(&description)
@@ -454,7 +674,18 @@ pub async fn update_website_for_user(
         );
     }
 
-    Ok(())
+    Ok(NavigationWebsite {
+        uuid: website_uuid.to_string(),
+        group_uuid: payload.group_uuid.clone(),
+        title: payload.title.trim().to_string(),
+        url: payload.url.trim().to_string(),
+        url_lan,
+        default_icon,
+        local_icon_path,
+        background_color,
+        description,
+        sort_order,
+    })
 }
 
 /// 原子更新当前用户指定分组内的完整站点顺序。
@@ -587,14 +818,17 @@ fn compare_sort_then_title(
 #[cfg(test)]
 mod tests {
     use super::{
-        WEBSITE_ICON_MAX_BYTES, create_website_for_user, reorder_websites_for_user,
+        WEBSITE_ICON_MAX_BYTES, clear_lock_password, create_website_for_user,
+        normalize_lock_password, reorder_websites_for_user, set_group_lock, set_lock_password,
         update_website_for_user, validate_website_icon,
     };
     use crate::config::STORAGE_BASE_DIR;
     use crate::error::ApiError;
     use crate::models::website::{
-        CreateWebsitePayload, DEFAULT_WEBSITE_ICON, UpdateWebsitePayload, WebsiteIconAction,
+        CreateWebsitePayload, DEFAULT_WEBSITE_ICON, LaunchpadLockPasswordPayload,
+        LaunchpadLockPayload, UpdateWebsitePayload, WebsiteIconAction,
     };
+    use bcrypt::{DEFAULT_COST, hash, verify};
     use sqlx::SqlitePool;
     use std::path::PathBuf;
     use tokio::fs;
@@ -602,6 +836,31 @@ mod tests {
 
     async fn create_test_pool() -> SqlitePool {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::query(
+            r#"
+            CREATE TABLE launchpad_lock_settings (
+                user_uuid TEXT PRIMARY KEY,
+                password_hash TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"
+            CREATE TABLE launchpad_group_locks (
+                user_uuid TEXT NOT NULL,
+                group_uuid TEXT NOT NULL,
+                PRIMARY KEY (user_uuid, group_uuid)
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
         sqlx::query(
             r#"
             CREATE TABLE website_groups (
@@ -665,6 +924,131 @@ mod tests {
         .await
         .unwrap();
         pool
+    }
+
+    #[tokio::test]
+    async fn lock_password_can_be_overwritten_without_current_password() {
+        let pool = create_test_pool().await;
+        let old_hash = hash("old-password", DEFAULT_COST).unwrap();
+        sqlx::query(
+            "INSERT INTO launchpad_lock_settings (user_uuid, password_hash, created_at, updated_at) VALUES ('user-a', ?1, 'initial', 'initial')",
+        )
+        .bind(old_hash)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        set_lock_password(
+            &pool,
+            "user-a",
+            &LaunchpadLockPasswordPayload {
+                new_password: "new-password".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let stored_hash: String = sqlx::query_scalar(
+            "SELECT password_hash FROM launchpad_lock_settings WHERE user_uuid = 'user-a'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(verify("new-password", &stored_hash).unwrap());
+    }
+
+    #[tokio::test]
+    async fn clearing_lock_password_removes_existing_group_locks() {
+        let pool = create_test_pool().await;
+        let old_lock_hash = hash("old-lock-password", DEFAULT_COST).unwrap();
+        sqlx::query(
+            "INSERT INTO launchpad_lock_settings (user_uuid, password_hash, created_at, updated_at) VALUES ('user-a', ?1, 'initial', 'initial')",
+        )
+        .bind(old_lock_hash)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO launchpad_group_locks (user_uuid, group_uuid) VALUES ('user-a', 'group-a')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        clear_lock_password(&pool, "user-a").await.unwrap();
+
+        let settings_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(1) FROM launchpad_lock_settings WHERE user_uuid = 'user-a'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let group_lock_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(1) FROM launchpad_group_locks WHERE user_uuid = 'user-a' AND group_uuid = 'group-a'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(settings_count, 0);
+        assert_eq!(group_lock_count, 0);
+    }
+
+    #[tokio::test]
+    async fn group_owner_can_disable_lock_without_password() {
+        let pool = create_test_pool().await;
+        sqlx::query("INSERT INTO website_groups (uuid, user_uuid) VALUES ('group-a', 'user-a')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO launchpad_group_locks (user_uuid, group_uuid) VALUES ('user-a', 'group-a')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        set_group_lock(
+            &pool,
+            "user-a",
+            "group-a",
+            &LaunchpadLockPayload { locked: false },
+        )
+        .await
+        .unwrap();
+
+        let lock_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(1) FROM launchpad_group_locks WHERE user_uuid = 'user-a' AND group_uuid = 'group-a'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(lock_count, 0);
+    }
+
+    #[tokio::test]
+    async fn non_owner_cannot_disable_group_lock() {
+        let pool = create_test_pool().await;
+        sqlx::query("INSERT INTO website_groups (uuid, user_uuid) VALUES ('group-a', 'user-a')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO launchpad_group_locks (user_uuid, group_uuid) VALUES ('user-a', 'group-a')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let error = set_group_lock(
+            &pool,
+            "user-b",
+            "group-a",
+            &LaunchpadLockPayload { locked: false },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(error, ApiError::ResourceNotFound));
     }
 
     fn create_payload(group_uuid: &str) -> CreateWebsitePayload {
@@ -1048,6 +1432,13 @@ mod tests {
         ] {
             assert!(validate_website_icon("icon.svg", svg.to_vec()).is_err());
         }
+    }
+
+    #[test]
+    fn normalizes_lock_password_and_enforces_length() {
+        assert_eq!(normalize_lock_password("  secret  ").unwrap(), "secret");
+        assert!(normalize_lock_password("   ").is_err());
+        assert!(normalize_lock_password(&"x".repeat(129)).is_err());
     }
 
     #[test]

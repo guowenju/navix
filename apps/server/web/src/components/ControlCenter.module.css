@@ -530,6 +530,78 @@
   flex: 0 0 auto;
 }
 
+.preferenceInput {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  border: 1px solid var(--app-card-border);
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: var(--app-button-secondary-bg);
+  color: var(--app-text-primary);
+}
+
+.lockPasswordCard {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 18px;
+}
+
+.lockPasswordHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.lockPasswordStatus {
+  flex: 0 0 auto;
+  padding: 5px 10px;
+  border: 1px solid var(--app-accent-border);
+  border-radius: 999px;
+  background: var(--app-accent-soft);
+  color: var(--app-text-primary);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.lockPasswordSection {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  padding-top: 16px;
+  border-top: 1px solid var(--app-card-border);
+}
+
+.lockPasswordSectionTitle {
+  margin: 0;
+  color: var(--app-text-secondary);
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.lockPasswordFields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
+  gap: 12px;
+  min-width: 0;
+}
+
+.lockPasswordField {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  color: var(--app-text-muted);
+  font-size: 0.78rem;
+}
+
+.lockPasswordActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 .preferenceSliderGroup {
   flex: 1 1 280px;
   display: grid;
@@ -760,6 +832,24 @@
 
   .adminCreateFormInline {
     grid-template-columns: 1fr;
+  }
+
+  .lockPasswordHeader {
+    width: 100%;
+  }
+
+  .lockPasswordFields {
+    width: 100%;
+    grid-template-columns: 1fr;
+  }
+
+  .lockPasswordActions {
+    width: 100%;
+    flex-direction: column;
+  }
+
+  .lockPasswordActions button {
+    width: 100%;
   }
 
   .preferenceSliderGroup {

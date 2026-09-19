@@ -6,6 +6,7 @@ import { useI18n } from "../i18n/useI18n";
 import ControlCenter, {
   type ControlCenterSection,
 } from "../components/ControlCenter";
+import Banner, { type BannerNotice } from "../components/Banner";
 import styles from "./AppShell.module.css";
 
 export type LaunchpadMode = "wan" | "lan";
@@ -40,10 +41,12 @@ const AppShell = () => {
   const [isControlCenterOpen, setIsControlCenterOpen] = useState(false);
   const [activeControlCenterSection, setActiveControlCenterSection] =
     useState<ControlCenterSection>("account");
+  const [bannerNotice, setBannerNotice] = useState<BannerNotice | null>(null);
   const isLaunchpadRoute = location.pathname === "/launchpad";
 
   const handleLogout = () => {
     setIsControlCenterOpen(false);
+    setBannerNotice(null);
     clearUserAccessToken();
     void navigate("/login", { replace: true });
   };
@@ -159,8 +162,24 @@ const AppShell = () => {
         onToggleLaunchpadSidebar={() =>
           setLaunchpadSidebarEnabled(!launchpadSidebarEnabled)
         }
+        onNotify={setBannerNotice}
         onLogout={handleLogout}
       />
+      {bannerNotice ? (
+        <div
+          className={styles.notificationLayer}
+          data-ui="app-notification-layer"
+        >
+          <Banner
+            variant={bannerNotice.variant}
+            title={bannerNotice.title}
+            description={bannerNotice.description}
+            dismissLabel={t("common.close")}
+            dataUi="app-notification-banner"
+            onDismiss={() => setBannerNotice(null)}
+          />
+        </div>
+      ) : null}
     </div>
   );
 };

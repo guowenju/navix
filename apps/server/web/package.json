@@ -21,6 +21,7 @@
     "@navix/shared-ui": "workspace:*",
     "react": "catalog:",
     "react-dom": "catalog:",
+    "react-icons": "catalog:",
     "react-router-dom": "catalog:"
   },
   "devDependencies": {

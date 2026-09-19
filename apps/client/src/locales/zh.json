@@ -128,6 +128,8 @@
       "errorIconMissing": "图标丢失"
     },
     "addItem": "添加网站",
+    "collapseGroup": "折叠分组",
+    "expandGroup": "展开分组",
     "editItem": "编辑网站",
     "resetColor": "重置颜色",
     "selectGroup": "请选择一个分组",
