@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/guowenju/navix/compare/0.3.1...0.4.0) - 2026-09-19
+
 ### Added
 
 - Web 端新增分组密码锁，可隐藏锁定分组中的站点信息，并在解锁后查看和管理分组内容。
