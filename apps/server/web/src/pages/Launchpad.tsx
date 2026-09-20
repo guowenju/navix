@@ -444,6 +444,7 @@ const LaunchpadPage = () => {
 
   const iconUrlsRef = useRef<Record<string, SiteIconCacheEntry>>({});
   const groupRefs = useRef<Record<string, HTMLElement | null>>({});
+  const lockPasswordBannerRef = useRef<HTMLDivElement | null>(null);
   const searchEngineMenuRef = useRef<HTMLDivElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const siteTitleInputRef = useRef<HTMLInputElement | null>(null);
@@ -586,6 +587,17 @@ const LaunchpadPage = () => {
       );
     };
   }, [loadLaunchpad]);
+
+  useEffect(() => {
+    if (!lockPasswordBannerGroup) return;
+    const frameId = window.requestAnimationFrame(() => {
+      lockPasswordBannerRef.current?.scrollIntoView({
+        block: "nearest",
+        inline: "nearest",
+      });
+    });
+    return () => window.cancelAnimationFrame(frameId);
+  }, [lockPasswordBannerGroup]);
 
   const replaceGroup = useCallback((nextGroup: LaunchpadGroup) => {
     setLaunchpad((current) =>
@@ -1733,26 +1745,6 @@ const LaunchpadPage = () => {
         )}
         {!loading && !error ? (
           <div className={styles.pageLayout} data-slot="launchpad-layout">
-            {lockPasswordBannerGroup ? (
-              <Banner
-                variant="warning"
-                title={t("launchpad.lockPasswordMissingTitle")}
-                description={t("launchpad.lockPasswordMissingHint")}
-                actionLabel={t("launchpad.setLockPassword")}
-                dismissLabel={t("common.close")}
-                dataUi="launchpad-lock-password-banner"
-                onAction={() => {
-                  setLockDialog({
-                    mode: "setup",
-                    group: lockPasswordBannerGroup,
-                  });
-                  setLockDialogPassword("");
-                  setLockDialogError(null);
-                  setLockPasswordBannerGroup(null);
-                }}
-                onDismiss={() => setLockPasswordBannerGroup(null)}
-              />
-            ) : null}
             <section
               className={styles.searchSection}
               data-ui="launchpad-search"
@@ -2192,6 +2184,29 @@ const LaunchpadPage = () => {
                           </span>
                         ) : null}
                       </div>
+                      {lockPasswordBannerGroup?.uuid === group.uuid ? (
+                        <div
+                          ref={lockPasswordBannerRef}
+                          className={styles.groupNotice}
+                          data-slot="launchpad-group-notice"
+                        >
+                          <Banner
+                            variant="warning"
+                            title={t("launchpad.lockPasswordMissingTitle")}
+                            description={t("launchpad.lockPasswordMissingHint")}
+                            actionLabel={t("launchpad.setLockPassword")}
+                            dismissLabel={t("common.close")}
+                            dataUi="launchpad-lock-password-banner"
+                            onAction={() => {
+                              setLockDialog({ mode: "setup", group });
+                              setLockDialogPassword("");
+                              setLockDialogError(null);
+                              setLockPasswordBannerGroup(null);
+                            }}
+                            onDismiss={() => setLockPasswordBannerGroup(null)}
+                          />
+                        </div>
+                      ) : null}
                       {!isLocked && sortError?.groupUuid === group.uuid ? (
                         <p
                           className={styles.sortError}

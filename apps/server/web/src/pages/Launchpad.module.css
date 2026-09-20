@@ -507,6 +507,10 @@
   margin-bottom: 12px;
 }
 
+.groupNotice {
+  margin-bottom: 12px;
+}
+
 .groupTitleRow {
   display: flex;
   align-items: center;

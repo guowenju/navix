@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- 修复 Web 端在页面下方锁定分组时，未设置分组锁密码的提示显示在页面顶部而不可见的问题。
+
 ## [0.4.0](https://github.com/guowenju/navix/compare/0.3.1...0.4.0) - 2026-09-19
 
 ### Added
