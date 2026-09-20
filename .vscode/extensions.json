@@ -1,8 +1,5 @@
 {
   "recommendations": [
-    "tauri-apps.tauri-vscode",
-    "esbenp.prettier-vscode",
-    "dbaeumer.vscode-eslint",
     "rust-lang.rust-analyzer",
     "tamasfe.even-better-toml",
     "usernamehw.errorlens"
