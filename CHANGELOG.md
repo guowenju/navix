@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- 将应用程序标识符更新为 `dev.vust.navix`。
+
 ### Fixed
 
 - 修复 Web 端在页面下方锁定分组时，未设置分组锁密码的提示显示在页面顶部而不可见的问题。
