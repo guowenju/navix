@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.4.1](https://github.com/guowenju/navix/compare/0.4.0...0.4.1) - 2026-11-22
+
 ### Changed
 
 - 将应用程序标识符更新为 `dev.vust.navix`。
